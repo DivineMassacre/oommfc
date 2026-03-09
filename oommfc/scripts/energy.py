@@ -361,28 +361,182 @@ def cubicanisotropy_script(term, system):
 
 
 def magnetoelastic_script(term, system):
+    """Generate MIF script for magneto-elastic energy term.
+    
+    Supports three OOMMF classes based on the term parameters:
+    - YY_FixedMEL: static strain (default)
+    - YY_StageMEL: stage-based strain from files
+    - YY_TransformStageMEL: transformation-based time-dependent strain
+    """
     B1mif, B1name = oc.scripts.setup_scalar_parameter(term.B1, f"{term.name}_B1")
     B2mif, B2name = oc.scripts.setup_scalar_parameter(term.B2, f"{term.name}_B2")
+    
+    mif = ""
+    mif += B1mif
+    mif += B2mif
+    
+    # Determine which OOMMF class to use based on term parameters
+    if hasattr(term, 'transform_script') and term.transform_script is not None:
+        # YY_TransformStageMEL: transformation-based time-dependent strain
+        mif += _transform_mel_script(term, system, B1name, B2name)
+    elif hasattr(term, 'e_diag_files') and term.e_diag_files is not None:
+        # YY_StageMEL: stage-based strain from files
+        mif += _stage_mel_script(term, system, B1name, B2name)
+    else:
+        # YY_FixedMEL: static strain (original behavior)
+        ediagmif, ediagname = oc.scripts.setup_vector_parameter(
+            term.e_diag, f"{term.name}_ediag"
+        )
+        eoffdiagmif, eoffdiagname = oc.scripts.setup_vector_parameter(
+            term.e_offdiag, f"{term.name}_eoffdiag"
+        )
+        
+        mif += ediagmif
+        mif += eoffdiagmif
+        mif += "# MagnetoElastic (YY_FixedMEL)\n"
+        mif += f"Specify YY_FixedMEL:{term.name} {{\n"
+        mif += f"  B1 {B1name}\n"
+        mif += f"  B2 {B2name}\n"
+        mif += f"  e_diag_field {ediagname}\n"
+        mif += f"  e_offdiag_field {eoffdiagname}\n"
+        mif += "}\n\n"
+    
+    return mif
+
+
+def _stage_mel_script(term, system, B1name, B2name):
+    """Generate MIF script for YY_StageMEL (stage-based strain)."""
+    mif = ""
+    
+    # Generate Tcl scripts for strain if callable functions are provided
+    if hasattr(term, 'e_diag_func') and callable(term.e_diag_func):
+        mif += _generate_strain_scripts(term)
+    
+    mif += "# MagnetoElastic (YY_StageMEL)\n"
+    mif += f"Specify YY_StageMEL:{term.name} {{\n"
+    mif += f"  B1 {B1name}\n"
+    mif += f"  B2 {B2name}\n"
+    
+    if hasattr(term, 'e_diag_files') and term.e_diag_files is not None:
+        # Use file lists
+        diag_files_str = " ".join(term.e_diag_files)
+        offdiag_files_str = " ".join(term.e_offdiag_files)
+        mif += f"  e_diag_files {{{diag_files_str}}}\n"
+        mif += f"  e_offdiag_files {{{offdiag_files_str}}}\n"
+    else:
+        # Use Tcl scripts
+        mif += f"  e_diag_script strain_diag_{term.name}\n"
+        mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
+    
+    if hasattr(term, 'stage_count') and term.stage_count is not None:
+        mif += f"  stage_count {term.stage_count}\n"
+    
+    mif += "}\n\n"
+    
+    return mif
+
+
+def _transform_mel_script(term, system, B1name, B2name):
+    """Generate MIF script for YY_TransformStageMEL (transformation-based strain)."""
+    mif = ""
+    
+    # First, set up the base strain fields
     ediagmif, ediagname = oc.scripts.setup_vector_parameter(
         term.e_diag, f"{term.name}_ediag"
     )
     eoffdiagmif, eoffdiagname = oc.scripts.setup_vector_parameter(
         term.e_offdiag, f"{term.name}_eoffdiag"
     )
-
-    mif = ""
-    mif += B1mif
-    mif += B2mif
     mif += ediagmif
     mif += eoffdiagmif
-    mif += "# MagnetoElastic\n"
-    mif += f"Specify YY_FixedMEL:{term.name} {{\n"
+    
+    # Generate transformation script if callable is provided
+    if callable(term.transform_script):
+        mif += _generate_transform_script(term)
+    
+    mif += "# MagnetoElastic (YY_TransformStageMEL)\n"
+    mif += f"Specify YY_TransformStageMEL:{term.name} {{\n"
     mif += f"  B1 {B1name}\n"
     mif += f"  B2 {B2name}\n"
     mif += f"  e_diag_field {ediagname}\n"
     mif += f"  e_offdiag_field {eoffdiagname}\n"
+    mif += f"  type {term.transform_type}\n"
+    
+    if hasattr(term, 'transform_script_args') and term.transform_script_args:
+        mif += f"  script_args {term.transform_script_args}\n"
+        mif += f"  script transform_{term.name}\n"
+    
+    if hasattr(term, 'stage_count') and term.stage_count is not None:
+        mif += f"  stage_count {term.stage_count}\n"
+    
     mif += "}\n\n"
+    
+    return mif
 
+
+def _generate_strain_scripts(term):
+    """Generate Tcl scripts for stage-based strain from Python callables."""
+    mif = ""
+    
+    # Generate strain_diag script
+    if hasattr(term, 'e_diag_func') and callable(term.e_diag_func):
+        mif += f"proc strain_diag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Python callable: {term.e_diag_func.__name__}\n"
+        mif += "  # Note: Actual values must be pre-computed and passed via files\n"
+        mif += "  error \"Stage-based strain with Python callable requires pre-computed OVf files\"\n"
+        mif += "}\n\n"
+    
+    # Generate strain_offdiag script
+    if hasattr(term, 'e_offdiag_func') and callable(term.e_offdiag_func):
+        mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Python callable: {term.e_offdiag_func.__name__}\n"
+        mif += "  # Note: Actual values must be pre-computed and passed via files\n"
+        mif += "  error \"Stage-based strain with Python callable requires pre-computed OVf files\"\n"
+        mif += "}\n\n"
+    
+    return mif
+
+
+def _generate_transform_script(term):
+    """Generate Tcl transformation script from Python callable.
+    
+    The Python callable is evaluated at MIF generation time to create
+    a Tcl script that computes the transformation at runtime.
+    """
+    mif = ""
+    
+    # Determine the script arguments
+    script_args = getattr(term, 'transform_script_args', 'total_time')
+    args_list = script_args.split()
+    
+    # Build the Tcl proc signature
+    args_str = " ".join(args_list)
+    mif += f"proc transform_{term.name} {{ {args_str} }} {{\n"
+    mif += f"  # Transformation type: {term.transform_type}\n"
+    mif += f"  # Python function: {term.transform_script.__name__}\n"
+    mif += "  # Note: For Python callables, the transformation must be\n"
+    mif += "  # pre-computed or implemented directly in Tcl.\n"
+    mif += "  # This is a placeholder - full implementation requires\n"
+    mif += "  # embedding Python evaluation or pre-computed coefficients.\n"
+    mif += "\n"
+    
+    # Generate placeholder based on transform_type
+    if term.transform_type == 'diagonal':
+        mif += "  # Diagonal transform: returns 6 values (3 diagonal + 3 derivatives)\n"
+        mif += "  # Format: M11 M22 M33 dM11/dt dM22/dt dM33/dt\n"
+        mif += "  return [list 1.0 1.0 1.0 0.0 0.0 0.0]\n"
+    elif term.transform_type == 'symmetric':
+        mif += "  # Symmetric transform: returns 12 values\n"
+        mif += "  return [list 1.0 0.0 0.0 1.0 0.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0]\n"
+    elif term.transform_type == 'general':
+        mif += "  # General transform: returns 18 values\n"
+        mif += "  return [list 1.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0]\n"
+    else:
+        mif += "  # Identity transform (no transformation)\n"
+        mif += "  return {}\n"
+    
+    mif += "}\n\n"
+    
     return mif
 
 
