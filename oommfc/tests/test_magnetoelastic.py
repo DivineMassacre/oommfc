@@ -100,6 +100,8 @@ class TestMagnetoElasticScript:
         assert "proc strain_offdiag_" in mif
         # Verify 3-argument signature
         assert "stage stage_time total_time" in mif
+        # script field MUST be present
+        assert "script transform_" in mif
         # script_args should NOT be present (uses default)
         assert "script_args" not in mif
 

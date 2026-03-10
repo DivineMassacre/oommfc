@@ -477,6 +477,10 @@ def _transform_mel_script(term, system, B1name, B2name):
     mif += f"  e_diag_script strain_diag_{term.name}\n"
     mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
     mif += f"  type {term.transform_type}\n"
+    
+    # REQUIRED: script field for YY_TransformStageMEL
+    if callable(term.transform_script):
+        mif += f"  script transform_{term.name}\n"
 
     # Use default script_args (stage stage_time total_time) for compatibility
     # with OOMMF MEL extension
