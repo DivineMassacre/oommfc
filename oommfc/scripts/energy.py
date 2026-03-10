@@ -437,40 +437,55 @@ def _stage_mel_script(term, system, B1name, B2name):
 
 
 def _transform_mel_script(term, system, B1name, B2name):
-    """Generate MIF script for YY_TransformStageMEL (transformation-based strain)."""
+    """Generate MIF script for YY_TransformStageMEL (transformation-based strain).
+    
+    Uses e_diag_script/e_offdiag_script to return Oxs_UniformVectorField specs.
+    """
     mif = ""
+
+    # Generate Tcl scripts for base strain fields
+    # These scripts return Oxs_UniformVectorField specs for each stage
+    mif += f"proc strain_diag_{term.name} {{ stage }} {{\n"
+    mif += f"  # Base diagonal strain: {term.e_diag}\n"
+    mif += f"  set spec Oxs_UniformVectorField\n"
+    mif += f"  lappend spec [subst {{\n"
+    mif += f"    norm 1\n"
+    mif += f"    vector {{ {term.e_diag[0]} {term.e_diag[1]} {term.e_diag[2]} }}\n"
+    mif += f"  }}]\n"
+    mif += f"  return $spec\n"
+    mif += f"}}\n\n"
     
-    # First, set up the base strain fields
-    ediagmif, ediagname = oc.scripts.setup_vector_parameter(
-        term.e_diag, f"{term.name}_ediag"
-    )
-    eoffdiagmif, eoffdiagname = oc.scripts.setup_vector_parameter(
-        term.e_offdiag, f"{term.name}_eoffdiag"
-    )
-    mif += ediagmif
-    mif += eoffdiagmif
-    
+    mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
+    mif += f"  # Base off-diagonal strain: {term.e_offdiag}\n"
+    mif += f"  set spec Oxs_UniformVectorField\n"
+    mif += f"  lappend spec [subst {{\n"
+    mif += f"    norm 1\n"
+    mif += f"    vector {{ {term.e_offdiag[0]} {term.e_offdiag[1]} {term.e_offdiag[2]} }}\n"
+    mif += f"  }}]\n"
+    mif += f"  return $spec\n"
+    mif += f"}}\n\n"
+
     # Generate transformation script if callable is provided
     if callable(term.transform_script):
         mif += _generate_transform_script(term)
-    
+
     mif += "# MagnetoElastic (YY_TransformStageMEL)\n"
     mif += f"Specify YY_TransformStageMEL:{term.name} {{\n"
     mif += f"  B1 {B1name}\n"
     mif += f"  B2 {B2name}\n"
-    mif += f"  e_diag_field {ediagname}\n"
-    mif += f"  e_offdiag_field {eoffdiagname}\n"
+    mif += f"  e_diag_script strain_diag_{term.name}\n"
+    mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
     mif += f"  type {term.transform_type}\n"
-    
+
     if hasattr(term, 'transform_script_args') and term.transform_script_args:
         mif += f"  script_args {term.transform_script_args}\n"
         mif += f"  script transform_{term.name}\n"
-    
+
     if hasattr(term, 'stage_count') and term.stage_count is not None:
         mif += f"  stage_count {term.stage_count}\n"
-    
+
     mif += "}\n\n"
-    
+
     return mif
 
 

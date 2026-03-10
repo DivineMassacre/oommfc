@@ -92,8 +92,12 @@ class TestMagnetoElasticScript:
         # Check script content
         assert "YY_TransformStageMEL" in mif
         assert "type diagonal" in mif
-        assert "transform_script_args" in mif or "script_args" in mif
+        assert "script_args" in mif
         assert "proc transform_" in mif
+        assert "e_diag_script" in mif
+        assert "e_offdiag_script" in mif
+        assert "proc strain_diag_" in mif
+        assert "proc strain_offdiag_" in mif
 
     def test_transform_all_types(self):
         """Test all transformation types generate valid scripts."""
