@@ -440,6 +440,7 @@ def _transform_mel_script(term, system, B1name, B2name):
     """Generate MIF script for YY_TransformStageMEL (transformation-based strain).
     
     Uses e_diag_script/e_offdiag_script to return Oxs_UniformVectorField specs.
+    Transform script receives (stage, stage_time, total_time) arguments.
     """
     mif = ""
 
@@ -477,10 +478,8 @@ def _transform_mel_script(term, system, B1name, B2name):
     mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
     mif += f"  type {term.transform_type}\n"
 
-    if hasattr(term, 'transform_script_args') and term.transform_script_args:
-        mif += f"  script_args {term.transform_script_args}\n"
-        mif += f"  script transform_{term.name}\n"
-
+    # Use default script_args (stage stage_time total_time) for compatibility
+    # with OOMMF MEL extension
     if hasattr(term, 'stage_count') and term.stage_count is not None:
         mif += f"  stage_count {term.stage_count}\n"
 
@@ -517,11 +516,11 @@ def _generate_transform_script(term):
 
     The Python callable is evaluated at discrete time steps to create
     a lookup table. Tcl script interpolates values at runtime.
+    
+    Script signature: transform_{name} {stage stage_time total_time}
+    Uses stage_time for lookup (time within current stage).
     """
     mif = ""
-
-    # Determine the script arguments
-    script_args = getattr(term, 'transform_script_args', 'total_time')
 
     # Pre-compute transform values at discrete time steps
     # We'll use 1000 points for smooth interpolation
@@ -545,9 +544,11 @@ def _generate_transform_script(term):
         transform_values.append(values)
 
     # Build Tcl lookup table
-    mif += f"proc transform_{term.name} {{ {script_args} }} {{\n"
+    # Script receives (stage, stage_time, total_time) - use stage_time for lookup
+    mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
     mif += f"  # Pre-computed transform values from Python callable\n"
     mif += f"  # Time step: {dt*1e12:.3f} ps, Points: {n_points}\n"
+    mif += f"  # Using stage_time for lookup\n"
     mif += "\n"
 
     # Create Tcl arrays for each component
@@ -558,9 +559,9 @@ def _generate_transform_script(term):
         mif += f"  set transform_data_{c} {{ {values_str} }}\n"
 
     mif += "\n"
-    mif += "  # Compute index from time\n"
+    mif += "  # Compute index from stage_time\n"
     mif += f"  set dt_lookup {dt}\n"
-    mif += "  set idx [expr {int($total_time / $dt_lookup)}]\n"
+    mif += "  set idx [expr {int($stage_time / $dt_lookup)}]\n"
     mif += f"  set n_points {n_points}\n"
     mif += "  if {$idx >= $n_points} { set idx [expr {$n_points - 1}] }\n"
     mif += "  if {$idx < 0} { set idx 0 }\n"

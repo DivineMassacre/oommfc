@@ -89,15 +89,19 @@ class TestMagnetoElasticScript:
         mel_term = system.energy.magnetoelastic
         mif = magnetoelastic_script(mel_term, system)
 
-        # Check script content
+        # Check script content - should NOT have explicit script_args
+        # (uses default: stage stage_time total_time)
         assert "YY_TransformStageMEL" in mif
         assert "type diagonal" in mif
-        assert "script_args" in mif
         assert "proc transform_" in mif
         assert "e_diag_script" in mif
         assert "e_offdiag_script" in mif
         assert "proc strain_diag_" in mif
         assert "proc strain_offdiag_" in mif
+        # Verify 3-argument signature
+        assert "stage stage_time total_time" in mif
+        # script_args should NOT be present (uses default)
+        assert "script_args" not in mif
 
     def test_transform_all_types(self):
         """Test all transformation types generate valid scripts."""
