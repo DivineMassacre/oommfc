@@ -520,9 +520,9 @@ def _generate_transform_script(term):
 
     The Python callable is evaluated at discrete time steps to create
     a lookup table. Tcl script interpolates values at runtime.
-    
+
     Script signature: transform_{name} {stage stage_time total_time}
-    Uses total_time for lookup (cumulative simulation time).
+    Uses stage_time for lookup (time within current stage).
     """
     mif = ""
 
@@ -543,16 +543,16 @@ def _generate_transform_script(term):
                 values = [values]
         except Exception:
             # Fallback to identity transform
-            values = [1.0] * 6
+            values = [0.0] * 6
 
         transform_values.append(values)
 
     # Build Tcl lookup table
-    # Script receives (stage, stage_time, total_time) - use total_time for lookup
+    # Script receives (stage, stage_time, total_time) - use stage_time for lookup
     mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
     mif += f"  # Pre-computed transform values from Python callable\n"
     mif += f"  # Time step: {dt*1e12:.3f} ps, Points: {n_points}\n"
-    mif += f"  # Using total_time for lookup (cumulative time)\n"
+    mif += f"  # Using stage_time for lookup (cumulative time within stage)\n"
     mif += "\n"
 
     # Create Tcl arrays for each component
@@ -563,9 +563,9 @@ def _generate_transform_script(term):
         mif += f"  set transform_data_{c} {{ {values_str} }}\n"
 
     mif += "\n"
-    mif += "  # Compute index from total_time (cumulative simulation time)\n"
+    mif += "  # Compute index from stage_time\n"
     mif += f"  set dt_lookup {dt}\n"
-    mif += "  set idx [expr {int($total_time / $dt_lookup)}]\n"
+    mif += "  set idx [expr {int($stage_time / $dt_lookup)}]\n"
     mif += f"  set n_points {n_points}\n"
     mif += "  if {$idx >= $n_points} { set idx [expr {$n_points - 1}] }\n"
     mif += "  if {$idx < 0} { set idx 0 }\n"
