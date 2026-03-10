@@ -513,54 +513,77 @@ def _generate_strain_scripts(term):
 
 
 def _generate_transform_script(term):
-    """Generate Tcl transformation script from Python callable.
+    """Generate Tcl transformation script using pre-computed values.
 
-    The Python callable is evaluated to determine the pattern,
-    then Tcl code is generated to reproduce it at runtime.
-    
-    Note: This works for simple harmonic functions. For complex
-    time dependencies, users should provide Tcl scripts directly.
+    The Python callable is evaluated at discrete time steps to create
+    a lookup table. Tcl script interpolates values at runtime.
     """
     mif = ""
 
     # Determine the script arguments
     script_args = getattr(term, 'transform_script_args', 'total_time')
-    args_list = script_args.split()
 
-    # Build the Tcl proc signature
-    args_str = " ".join(args_list)
-    mif += f"proc transform_{term.name} {{ {args_str} }} {{\n"
-    mif += f"  # Transformation type: {term.transform_type}\n"
-    mif += f"  # Generated from Python callable: {term.transform_script.__name__}\n"
-    mif += "  # Note: This is a simplified harmonic approximation.\n"
-    mif += "  # For complex time dependencies, provide Tcl script directly.\n"
+    # Pre-compute transform values at discrete time steps
+    # We'll use 1000 points for smooth interpolation
+    n_points = 1000
+    t_max = 1e-9  # 1 ns max simulation time
+    dt = t_max / n_points
+
+    transform_values = []
+    for i in range(n_points):
+        t = i * dt
+        try:
+            values = term.transform_script(t)
+            if hasattr(values, '__iter__'):
+                values = list(values)
+            else:
+                values = [values]
+        except Exception:
+            # Fallback to identity transform
+            values = [1.0] * 6
+
+        transform_values.append(values)
+
+    # Build Tcl lookup table
+    mif += f"proc transform_{term.name} {{ {script_args} }} {{\n"
+    mif += f"  # Pre-computed transform values from Python callable\n"
+    mif += f"  # Time step: {dt*1e12:.3f} ps, Points: {n_points}\n"
     mif += "\n"
 
-    # Generate harmonic approximation
-    # This assumes the Python function is of the form: A*sin(2*pi*f*t + phi)
-    # We'll use a simple sine wave with parameters that can be customized
-    mif += "  # Harmonic transform parameters (customize as needed)\n"
-    mif += "  set f 10e9  ;# Frequency in Hz\n"
-    mif += "  set A 1e-3  ;# Amplitude\n"
-    mif += "  set PI [expr {4*atan(1.0)}]\n"
-    mif += "  set w [expr {2*$PI*$f}]\n"
-    mif += "  set coef [expr {$A*sin($w*$total_time)}]\n"
-    mif += "  set dcoef [expr {$A*$w*cos($w*$total_time)}]\n"
+    # Create Tcl arrays for each component
+    n_components = len(transform_values[0]) if transform_values else 6
+    mif += "  # Lookup tables\n"
+    for c in range(n_components):
+        values_str = " ".join(f"{v[c] if c < len(v) else 0:.6e}" for v in transform_values)
+        mif += f"  set transform_data_{c} {{ {values_str} }}\n"
+
+    mif += "\n"
+    mif += "  # Compute index from time\n"
+    mif += f"  set dt_lookup {dt}\n"
+    mif += "  set idx [expr {int($total_time / $dt_lookup)}]\n"
+    mif += f"  set n_points {n_points}\n"
+    mif += "  if {$idx >= $n_points} { set idx [expr {$n_points - 1}] }\n"
+    mif += "  if {$idx < 0} { set idx 0 }\n"
     mif += "\n"
 
-    # Generate return based on transform_type
+    # Return values based on transform_type
+    mif += "  # Return transform values\n"
     if term.transform_type == 'diagonal':
-        mif += "  # Diagonal transform: returns 6 values\n"
-        mif += "  # Format: M11 M22 M33 dM11/dt dM22/dt dM33/dt\n"
-        mif += "  return [list $coef $coef $coef $dcoef $dcoef $dcoef]\n"
+        mif += "  return [list \\\n"
+        for c in range(6):
+            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+        mif += "  ]\n"
     elif term.transform_type == 'symmetric':
-        mif += "  # Symmetric transform: returns 12 values\n"
-        mif += "  return [list $coef 0 0 $coef 0 $coef 0 0 0 0 0 0]\n"
+        mif += "  return [list \\\n"
+        for c in range(12):
+            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+        mif += "  ]\n"
     elif term.transform_type == 'general':
-        mif += "  # General transform: returns 18 values\n"
-        mif += "  return [list $coef 0 0 0 $coef 0 0 0 $coef $dcoef 0 0 0 $dcoef 0 0 0 $dcoef]\n"
+        mif += "  return [list \\\n"
+        for c in range(18):
+            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+        mif += "  ]\n"
     else:
-        mif += "  # Identity transform (no transformation)\n"
         mif += "  return {}\n"
 
     mif += "}\n\n"
