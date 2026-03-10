@@ -525,19 +525,22 @@ def _generate_transform_script(term):
     
     Script signature: transform_{name} {stage stage_time total_time}
     
-    Parameters can be customized via term.transform_dt and term.transform_n_points.
+    Parameters:
+    - transform_dt: time step for pre-computation (default: 0.1 ps)
+    - n_points: automatically determined to cover up to 1 ns simulation
     """
     mif = ""
 
-    # Get dt and n_points from term attributes (like Zeeman)
-    # Default: dt = 0.1 ps, n_points = 100 (matches Zeeman defaults)
+    # Get dt from term attribute (like Zeeman)
+    # Default: dt = 0.1 ps (matches Zeeman default)
     dt = getattr(term, 'transform_dt', None)
-    n_points = getattr(term, 'transform_n_points', None)
-    
     if dt is None:
         dt = 1e-13  # 0.1 ps (like Zeeman default)
-    if n_points is None:
-        n_points = 100  # 100 points (like Zeeman)
+    
+    # Automatically determine n_points to cover typical simulation times
+    # For dt=0.1ps, n_points=10000 covers up to 1ns
+    # For dt=0.01ps, n_points=100000 covers up to 1ns
+    n_points = int(1e-9 / dt)  # Cover up to 1 ns
     
     # Evaluate Python callable at each timestep
     transform_values = []
@@ -560,7 +563,7 @@ def _generate_transform_script(term):
     # Build Tcl script with tlist approach (EXACTLY like Zeeman)
     mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
     mif += f"  # Pre-computed transform values (tlist approach like Zeeman)\n"
-    mif += f"  # dt = {dt*1e15:.1f} fs, n_points = {n_points}\n"
+    mif += f"  # dt = {dt*1e15:.2f} fs, n_points = {n_points} (covers up to 1 ns)\n"
     mif += "\n"
     
     # Create Tcl lists for each component (EXACTLY like H_t_fac in Zeeman)
