@@ -524,13 +524,20 @@ def _generate_transform_script(term):
     This matches the Zeeman approach: func/dt -> tlist -> lindex lookup.
     
     Script signature: transform_{name} {stage stage_time total_time}
+    
+    Parameters can be customized via term.transform_dt and term.transform_n_points.
     """
     mif = ""
 
-    # Pre-compute transform values at discrete time steps
-    # Match Zeeman defaults: dt = 0.1 ps, n_points = 100 (10 ps total)
-    dt = 1e-13  # 0.1 ps (like Zeeman default)
-    n_points = 100  # 100 points (like Zeeman)
+    # Get dt and n_points from term attributes (like Zeeman)
+    # Default: dt = 0.1 ps, n_points = 100 (matches Zeeman defaults)
+    dt = getattr(term, 'transform_dt', None)
+    n_points = getattr(term, 'transform_n_points', None)
+    
+    if dt is None:
+        dt = 1e-13  # 0.1 ps (like Zeeman default)
+    if n_points is None:
+        n_points = 100  # 100 points (like Zeeman)
     
     # Evaluate Python callable at each timestep
     transform_values = []
