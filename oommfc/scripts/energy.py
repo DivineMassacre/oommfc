@@ -543,81 +543,90 @@ def _generate_strain_scripts(term):
 
 
 def _generate_transform_script(term):
-    """Generate Tcl transformation script using pre-computed values.
-
-    The Python callable is evaluated at discrete time steps to create
-    a lookup table. Tcl script interpolates values at runtime.
+    """Generate Tcl transformation script using tlist approach (like Zeeman).
+    
+    Pre-compute transform values at discrete time steps in Python.
+    Pass values as lists to MIF. Index by stage_time.
+    
+    This matches the Zeeman approach: func/dt -> tlist -> lindex lookup.
     
     Script signature: transform_{name} {stage stage_time total_time}
-    Uses stage_time for lookup (time within current stage).
+    
+    Parameters:
+    - transform_dt: time step for pre-computation (default: 0.1 ps)
+    - n_points: automatically determined to cover up to 1 ns simulation
     """
     mif = ""
 
-    # Pre-compute transform values at discrete time steps
-    # We'll use 1000 points for smooth interpolation
-    n_points = 1000
-    t_max = 1e-9  # 1 ns max simulation time
-    dt = t_max / n_points
-
+    # Get dt from term attribute (like Zeeman)
+    # Default: dt = 0.1 ps (matches Zeeman default)
+    dt = getattr(term, 'transform_dt', None)
+    if dt is None:
+        dt = 1e-13  # 0.1 ps (like Zeeman default)
+    
+    # Automatically determine n_points to cover typical simulation times
+    # For dt=0.1ps, n_points=10000 covers up to 1ns
+    # For dt=0.01ps, n_points=100000 covers up to 1ns
+    n_points = int(1e-9 / dt)  # Cover up to 1 ns
+    
+    # Evaluate Python callable at each timestep
     transform_values = []
     for i in range(n_points):
         t = i * dt
         try:
             values = term.transform_script(t)
-            if hasattr(values, '__iter__'):
-                values = list(values)
-            else:
-                values = [values]
+            if not hasattr(values, '__iter__'):
+                values = [values] * 6
+            values = list(values)
         except Exception:
             # Fallback to identity transform
-            values = [1.0] * 6
-
+            values = [0.0] * 6
+        
         transform_values.append(values)
-
-    # Build Tcl lookup table
-    # Script receives (stage, stage_time, total_time) - use stage_time for lookup
-    mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
-    mif += f"  # Pre-computed transform values from Python callable\n"
-    mif += f"  # Time step: {dt*1e12:.3f} ps, Points: {n_points}\n"
-    mif += f"  # Using stage_time for lookup\n"
-    mif += "\n"
-
-    # Create Tcl arrays for each component
+    
+    # Determine number of components based on transform_type
     n_components = len(transform_values[0]) if transform_values else 6
-    mif += "  # Lookup tables\n"
-    for c in range(n_components):
-        values_str = " ".join(f"{v[c] if c < len(v) else 0:.6e}" for v in transform_values)
-        mif += f"  set transform_data_{c} {{ {values_str} }}\n"
-
+    
+    # Build Tcl script with tlist approach (EXACTLY like Zeeman)
+    mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
+    mif += f"  # Pre-computed transform values (tlist approach like Zeeman)\n"
+    mif += f"  # dt = {dt*1e15:.2f} fs, n_points = {n_points} (covers up to 1 ns)\n"
     mif += "\n"
-    mif += "  # Compute index from stage_time\n"
+    
+    # Create Tcl lists for each component (EXACTLY like H_t_fac in Zeeman)
+    for c in range(n_components):
+        values_str = " ".join(f"{v[c] if c < len(v) else 0:.15e}" for v in transform_values)
+        mif += f"  set transform_tlist_{c} {{ {values_str} }}\n"
+    
+    mif += "\n"
+    mif += "  # Compute index from stage_time (EXACTLY like Zeeman)\n"
     mif += f"  set dt_lookup {dt}\n"
     mif += "  set idx [expr {int($stage_time / $dt_lookup)}]\n"
     mif += f"  set n_points {n_points}\n"
     mif += "  if {$idx >= $n_points} { set idx [expr {$n_points - 1}] }\n"
     mif += "  if {$idx < 0} { set idx 0 }\n"
     mif += "\n"
-
+    
     # Return values based on transform_type
     mif += "  # Return transform values\n"
     if term.transform_type == 'diagonal':
         mif += "  return [list \\\n"
         for c in range(6):
-            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
         mif += "  ]\n"
     elif term.transform_type == 'symmetric':
         mif += "  return [list \\\n"
         for c in range(12):
-            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
         mif += "  ]\n"
     elif term.transform_type == 'general':
         mif += "  return [list \\\n"
         for c in range(18):
-            mif += f"    [lindex $transform_data_{c} $idx]\\\n"
+            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
         mif += "  ]\n"
     else:
         mif += "  return {}\n"
-
+    
     mif += "}\n\n"
 
     return mif
