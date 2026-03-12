@@ -153,3 +153,68 @@ class TestMagnetoElasticScript:
             transform_script=lambda t: [1] * 6
         )
         assert mel_transform._mel_class == "YY_TransformStageMEL"
+
+    def test_transform_direct_substitution_mode(self):
+        """Test direct substitution mode: func without e_diag/e_offdiag."""
+        system = mm.System(name="test_direct")
+
+        import discretisedfield as df
+        region = df.Region(p1=(0, 0, 0), p2=(10e-9, 10e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(2, 2, 2))
+
+        def strain_func(t):
+            # Returns full strain values
+            return [1e-3, 1e-3, 1e-3, 0, 0, 0]
+
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic.transform(
+            B1=1e7,
+            B2=1e7,
+            func=strain_func,  # No e_diag/e_offdiag
+            dt=1e-13,
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check direct substitution mode markers
+        assert "YY_TransformStageMEL" in mif
+        assert "Direct substitution mode" in mif
+        assert "proc transform_" in mif
+        # Base strain should be zero
+        assert "vector { 0 0 0 }" in mif
+
+    def test_transform_matrix_mode(self):
+        """Test matrix transformation mode: func + e_diag/e_offdiag."""
+        system = mm.System(name="test_matrix")
+
+        import discretisedfield as df
+        region = df.Region(p1=(0, 0, 0), p2=(10e-9, 10e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(2, 2, 2))
+
+        def transform_matrix(t):
+            # Returns transformation matrix M(t)
+            return [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic.transform(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),  # Base strain
+            e_offdiag=(0, 0, 0),
+            func=transform_matrix,  # Returns M(t)
+            dt=1e-13,
+            transform_type='diagonal',
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check matrix transformation mode markers
+        assert "YY_TransformStageMEL" in mif
+        assert "Matrix transformation mode" in mif
+        assert "e_final = M(t)" in mif
+        # Base strain should be user-provided values
+        assert "1e-03" in mif or "0.001" in mif

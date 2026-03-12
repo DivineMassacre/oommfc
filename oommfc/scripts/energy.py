@@ -438,32 +438,41 @@ def _stage_mel_script(term, system, B1name, B2name):
 
 def _transform_mel_script(term, system, B1name, B2name):
     """Generate MIF script for YY_TransformStageMEL (time-dependent strain).
-    
+
     Analogous to Oxs_TransformZeeman for Zeeman energy.
-    
+
     Uses tlist approach like Zeeman:
-    1. Pre-compute strain values at each timestep in Python
+    1. Pre-compute transform values at each timestep in Python
     2. Pass values as Tcl lists in MIF (defined INSIDE proc)
-    3. Tcl script indexes values by total_time/dt
-    
-    Direct substitution mode (current implementation):
-    - func(t) returns FULL STRAIN VALUES [e11, e22, e33, e23, e13, e12]
-    - Values are directly substituted (not matrix transformation)
-    - e_diag/e_offdiag used for initial state only
-    
+    3. Tcl script indexes values by stage_time/dt
+
+    Two modes are supported:
+
+    1. **Direct substitution mode** (default):
+       - func(t) returns FULL STRAIN VALUES [e11, e22, e33, e23, e13, e12]
+       - e_diag/e_offdiag are set to zero (not used)
+       - Values are directly substituted into energy calculation
+
+    2. **Matrix transformation mode**:
+       - func(t) returns TRANSFORMATION MATRIX elements M(t)
+       - e_diag/e_offdiag define base strain e_base
+       - Final strain: e_final = M(t) × e_base × M(t)ᵀ
+       - For diagonal type: e_final_ii = M_ii(t) × e_base_ii
+
     Parameters
     ----------
     term : MagnetoElastic
         The magneto-elastic energy term with attributes:
-        - transform_script or func: Python callable(t) -> [e11, e22, e33, e23, e13, e12]
+        - transform_script or func: Python callable(t) -> strain values or matrix elements
         - transform_dt or dt: time step in seconds (default: 0.1 ps)
         - transform_script_args: 'total_time' or 'stage_time'
         - transform_type: 'diagonal', 'symmetric', or 'general'
+        - e_diag, e_offdiag: base strain (for matrix mode only)
     system : System
         The micromagnetic system (not used in this function)
     B1name, B2name : str
         Names of B1 and B2 field specifications in MIF
-    
+
     Returns
     -------
     str
@@ -471,31 +480,62 @@ def _transform_mel_script(term, system, B1name, B2name):
     """
     mif = ""
 
-    # Generate Tcl scripts for base strain fields
-    # These scripts return Oxs_UniformVectorField specs for each stage
-    mif += f"proc strain_diag_{term.name} {{ stage }} {{\n"
-    mif += f"  # Base diagonal strain: {term.e_diag}\n"
-    mif += f"  set spec Oxs_UniformVectorField\n"
-    mif += f"  lappend spec [subst {{\n"
-    mif += f"    norm 1\n"
-    mif += f"    vector {{ {term.e_diag[0]} {term.e_diag[1]} {term.e_diag[2]} }}\n"
-    mif += f"  }}]\n"
-    mif += f"  return $spec\n"
-    mif += f"}}\n\n"
+    # Determine mode: direct substitution vs matrix transformation
+    # Direct substitution: e_diag is None or (0, 0, 0) (no base strain)
+    # Matrix transformation: e_diag is provided and non-zero (user-provided base strain)
+    # Note: e_offdiag can be zero even in matrix mode (no off-diagonal base strain)
+    has_base_strain = (
+        term.e_diag is not None and
+        term.e_diag != (0, 0, 0)
+    )
 
-    mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
-    mif += f"  # Base off-diagonal strain: {term.e_offdiag}\n"
-    mif += f"  set spec Oxs_UniformVectorField\n"
-    mif += f"  lappend spec [subst {{\n"
-    mif += f"    norm 1\n"
-    mif += f"    vector {{ {term.e_offdiag[0]} {term.e_offdiag[1]} {term.e_offdiag[2]} }}\n"
-    mif += f"  }}]\n"
-    mif += f"  return $spec\n"
-    mif += f"}}\n\n"
+    # Generate Tcl scripts for base strain fields
+    if has_base_strain:
+        # Matrix transformation mode: use user-provided base strain
+        mif += f"proc strain_diag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Base diagonal strain (matrix mode): {term.e_diag}\n"
+        mif += f"  set spec Oxs_UniformVectorField\n"
+        mif += f"  lappend spec [subst {{\n"
+        mif += f"    norm 1\n"
+        mif += f"    vector {{ {term.e_diag[0]} {term.e_diag[1]} {term.e_diag[2]} }}\n"
+        mif += f"  }}]\n"
+        mif += f"  return $spec\n"
+        mif += f"}}\n\n"
+
+        mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Base off-diagonal strain (matrix mode): {term.e_offdiag}\n"
+        mif += f"  set spec Oxs_UniformVectorField\n"
+        mif += f"  lappend spec [subst {{\n"
+        mif += f"    norm 1\n"
+        mif += f"    vector {{ {term.e_offdiag[0]} {term.e_offdiag[1]} {term.e_offdiag[2]} }}\n"
+        mif += f"  }}]\n"
+        mif += f"  return $spec\n"
+        mif += f"}}\n\n"
+    else:
+        # Direct substitution mode: base strain not used (set to zero)
+        mif += f"proc strain_diag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Direct substitution mode: base strain not used\n"
+        mif += f"  set spec Oxs_UniformVectorField\n"
+        mif += f"  lappend spec [subst {{\n"
+        mif += f"    norm 1\n"
+        mif += f"    vector {{ 0 0 0 }}\n"
+        mif += f"  }}]\n"
+        mif += f"  return $spec\n"
+        mif += f"}}\n\n"
+
+        mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
+        mif += f"  # Direct substitution mode: base strain not used\n"
+        mif += f"  set spec Oxs_UniformVectorField\n"
+        mif += f"  lappend spec [subst {{\n"
+        mif += f"    norm 1\n"
+        mif += f"    vector {{ 0 0 0 }}\n"
+        mif += f"  }}]\n"
+        mif += f"  return $spec\n"
+        mif += f"}}\n\n"
 
     # Generate transformation script if callable is provided
     if callable(term.transform_script):
-        mif += _generate_transform_script(term)
+        mif += _generate_transform_script(term, has_base_strain=has_base_strain)
 
     mif += "# MagnetoElastic (YY_TransformStageMEL)\n"
     mif += f"Specify YY_TransformStageMEL:{term.name} {{\n"
@@ -504,7 +544,7 @@ def _transform_mel_script(term, system, B1name, B2name):
     mif += f"  e_diag_script strain_diag_{term.name}\n"
     mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
     mif += f"  type {term.transform_type}\n"
-    
+
     # REQUIRED: script field for YY_TransformStageMEL
     if callable(term.transform_script):
         mif += f"  script transform_{term.name}\n"
@@ -542,19 +582,31 @@ def _generate_strain_scripts(term):
     return mif
 
 
-def _generate_transform_script(term):
+def _generate_transform_script(term, has_base_strain=False):
     """Generate Tcl transformation script using tlist approach (like Zeeman).
-    
+
     Pre-compute transform values at discrete time steps in Python.
     Pass values as lists to MIF. Index by stage_time.
-    
+
     This matches the Zeeman approach: func/dt -> tlist -> lindex lookup.
-    
+
     Script signature: transform_{name} {stage stage_time total_time}
-    
+
+    Two modes:
+
+    1. **Direct substitution** (has_base_strain=False):
+       - func(t) returns [e11, e22, e33, e23, e13, e12]
+       - These values are directly used as strain
+
+    2. **Matrix transformation** (has_base_strain=True):
+       - func(t) returns [M11, M22, M33, dM11, dM22, dM33]
+       - For diagonal type: e_final_ii = M_ii × e_base_ii
+       - The Tcl script performs the multiplication
+
     Parameters:
     - transform_dt: time step for pre-computation (default: 0.1 ps)
     - n_points: automatically determined to cover up to 1 ns simulation
+    - has_base_strain: if True, use matrix transformation mode
     """
     mif = ""
 
@@ -563,12 +615,12 @@ def _generate_transform_script(term):
     dt = getattr(term, 'transform_dt', None)
     if dt is None:
         dt = 1e-13  # 0.1 ps (like Zeeman default)
-    
+
     # Automatically determine n_points to cover typical simulation times
     # For dt=0.1ps, n_points=10000 covers up to 1ns
     # For dt=0.01ps, n_points=100000 covers up to 1ns
     n_points = int(1e-9 / dt)  # Cover up to 1 ns
-    
+
     # Evaluate Python callable at each timestep
     transform_values = []
     for i in range(n_points):
@@ -580,53 +632,89 @@ def _generate_transform_script(term):
             values = list(values)
         except Exception:
             # Fallback to identity transform
-            values = [0.0] * 6
-        
+            if has_base_strain:
+                # Matrix mode: identity matrix
+                values = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0]
+            else:
+                # Direct mode: zero strain
+                values = [0.0] * 6
+
         transform_values.append(values)
-    
+
     # Determine number of components based on transform_type
     n_components = len(transform_values[0]) if transform_values else 6
-    
-    # Build Tcl script with tlist approach (EXACTLY like Zeeman)
+
+    # Build Tcl script with tlist approach
     mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
-    mif += f"  # Pre-computed transform values (tlist approach like Zeeman)\n"
-    mif += f"  # dt = {dt*1e15:.2f} fs, n_points = {n_points} (covers up to 1 ns)\n"
+
+    if has_base_strain:
+        mif += f"  # Matrix transformation mode (tlist approach)\n"
+        mif += f"  # dt = {dt*1e15:.2f} fs, n_points = {n_points}\n"
+        mif += f"  # e_final = M(t) × e_base × M(t)ᵀ\n"
+    else:
+        mif += f"  # Direct substitution mode (tlist approach like Zeeman)\n"
+        mif += f"  # dt = {dt*1e15:.2f} fs, n_points = {n_points}\n"
+        mif += f"  # func(t) returns full strain values\n"
+
     mif += "\n"
-    
-    # Create Tcl lists for each component (EXACTLY like H_t_fac in Zeeman)
+
+    # Create Tcl lists for each component
     for c in range(n_components):
         values_str = " ".join(f"{v[c] if c < len(v) else 0:.15e}" for v in transform_values)
         mif += f"  set transform_tlist_{c} {{ {values_str} }}\n"
-    
+
     mif += "\n"
-    mif += "  # Compute index from stage_time (EXACTLY like Zeeman)\n"
+    mif += "  # Compute index from stage_time\n"
     mif += f"  set dt_lookup {dt}\n"
     mif += "  set idx [expr {int($stage_time / $dt_lookup)}]\n"
     mif += f"  set n_points {n_points}\n"
     mif += "  if {$idx >= $n_points} { set idx [expr {$n_points - 1}] }\n"
     mif += "  if {$idx < 0} { set idx 0 }\n"
     mif += "\n"
-    
-    # Return values based on transform_type
-    mif += "  # Return transform values\n"
-    if term.transform_type == 'diagonal':
-        mif += "  return [list \\\n"
-        for c in range(6):
-            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
-        mif += "  ]\n"
-    elif term.transform_type == 'symmetric':
-        mif += "  return [list \\\n"
-        for c in range(12):
-            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
-        mif += "  ]\n"
-    elif term.transform_type == 'general':
-        mif += "  return [list \\\n"
-        for c in range(18):
-            mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
-        mif += "  ]\n"
+
+    # Return values based on transform_type and mode
+    if has_base_strain:
+        # Matrix transformation mode: return M(t) values
+        # YY_TransformStageMEL will multiply by base strain
+        mif += "  # Return transformation matrix M(t)\n"
+        if term.transform_type == 'diagonal':
+            mif += "  return [list \\\n"
+            for c in range(6):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        elif term.transform_type == 'symmetric':
+            mif += "  return [list \\\n"
+            for c in range(12):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        elif term.transform_type == 'general':
+            mif += "  return [list \\\n"
+            for c in range(18):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        else:
+            mif += "  return {}\n"
     else:
-        mif += "  return {}\n"
-    
+        # Direct substitution mode: return full strain values
+        mif += "  # Return full strain values (direct substitution)\n"
+        if term.transform_type == 'diagonal':
+            mif += "  return [list \\\n"
+            for c in range(6):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        elif term.transform_type == 'symmetric':
+            mif += "  return [list \\\n"
+            for c in range(12):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        elif term.transform_type == 'general':
+            mif += "  return [list \\\n"
+            for c in range(18):
+                mif += f"    [lindex $transform_tlist_{c} $idx]\\\n"
+            mif += "  ]\n"
+        else:
+            mif += "  return {}\n"
+
     mif += "}\n\n"
 
     return mif
