@@ -437,10 +437,37 @@ def _stage_mel_script(term, system, B1name, B2name):
 
 
 def _transform_mel_script(term, system, B1name, B2name):
-    """Generate MIF script for YY_TransformStageMEL (transformation-based strain).
+    """Generate MIF script for YY_TransformStageMEL (time-dependent strain).
     
-    Uses e_diag_script/e_offdiag_script to return Oxs_UniformVectorField specs.
-    Transform script receives (stage, stage_time, total_time) arguments.
+    Analogous to Oxs_TransformZeeman for Zeeman energy.
+    
+    Uses tlist approach like Zeeman:
+    1. Pre-compute strain values at each timestep in Python
+    2. Pass values as Tcl lists in MIF (defined INSIDE proc)
+    3. Tcl script indexes values by total_time/dt
+    
+    Direct substitution mode (current implementation):
+    - func(t) returns FULL STRAIN VALUES [e11, e22, e33, e23, e13, e12]
+    - Values are directly substituted (not matrix transformation)
+    - e_diag/e_offdiag used for initial state only
+    
+    Parameters
+    ----------
+    term : MagnetoElastic
+        The magneto-elastic energy term with attributes:
+        - transform_script or func: Python callable(t) -> [e11, e22, e33, e23, e13, e12]
+        - transform_dt or dt: time step in seconds (default: 0.1 ps)
+        - transform_script_args: 'total_time' or 'stage_time'
+        - transform_type: 'diagonal', 'symmetric', or 'general'
+    system : System
+        The micromagnetic system (not used in this function)
+    B1name, B2name : str
+        Names of B1 and B2 field specifications in MIF
+    
+    Returns
+    -------
+    str
+        MIF script for YY_TransformStageMEL
     """
     mif = ""
 
@@ -455,7 +482,7 @@ def _transform_mel_script(term, system, B1name, B2name):
     mif += f"  }}]\n"
     mif += f"  return $spec\n"
     mif += f"}}\n\n"
-    
+
     mif += f"proc strain_offdiag_{term.name} {{ stage }} {{\n"
     mif += f"  # Base off-diagonal strain: {term.e_offdiag}\n"
     mif += f"  set spec Oxs_UniformVectorField\n"
