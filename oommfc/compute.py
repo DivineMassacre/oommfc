@@ -11,9 +11,38 @@ import oommfc as oc
 
 
 def oxs_class(term, system):
-    """Extract the OOMMF ``Oxs_`` class name of an individual term."""
+    """Extract the OOMMF class name and prefix of an individual term.
+    
+    Returns
+    -------
+    tuple
+        (prefix, class_name) where prefix is 'Oxs_' or 'YY_' and class_name
+        is the class name without prefix.
+    """
     mif = getattr(oc.scripts.energy, f"{term.name}_script")(term, system)
-    return re.search(r"Oxs_([\w_]+)", mif).group(1)
+    
+    # For MEL terms, look for the Specify block with the term name
+    # This ensures we get the MEL class (YY_FixedMEL, YY_TransformStageMEL, etc.)
+    # and not the helper class (Oxs_UniformVectorField)
+    if hasattr(term, '_mel_class'):
+        # Look for "Specify YY_ClassName:term_name {" pattern
+        specify_pattern = rf"Specify\s+(YY_\w+):{term.name}\s*\{{"
+        match = re.search(specify_pattern, mif)
+        if match is not None:
+            return ("YY_", match.group(1)[3:])  # Remove YY_ prefix
+    
+    # For standard OOMMF terms, look for Oxs_ prefix
+    match = re.search(r"Oxs_([\w_]+)", mif)
+    if match is not None:
+        return ("Oxs_", match.group(1))
+    
+    # Fallback: look for YY_ prefix
+    match = re.search(r"YY_([\w_]+)", mif)
+    if match is not None:
+        return ("YY_", match.group(1))
+    
+    msg = f"Cannot extract class name from MIF script for {term}"
+    raise ValueError(msg)
 
 
 def schedule_script(func, system):
@@ -24,17 +53,14 @@ def schedule_script(func, system):
         if isinstance(func.__self__, mm.Energy):
             output = "Oxs_RungeKuttaEvolve:evolver:Total field"
         else:
-            output = (
-                f"Oxs_{oxs_class(func.__self__, system)}:{func.__self__.name}:Field"
-            )
+            prefix, cls_name = oxs_class(func.__self__, system)
+            output = f"{prefix}{cls_name}:{func.__self__.name}:Field"
     elif func.__name__ == "density":
         if isinstance(func.__self__, mm.Energy):
             output = "Oxs_RungeKuttaEvolve:evolver:Total energy density"
         else:
-            output = (
-                f"Oxs_{oxs_class(func.__self__, system)}:"
-                f"{func.__self__.name}:Energy density"
-            )
+            prefix, cls_name = oxs_class(func.__self__, system)
+            output = f"{prefix}{cls_name}:{func.__self__.name}:Energy density"
     else:
         msg = f"Computing the value of {func} is not supported."
         raise ValueError(msg)
@@ -122,6 +148,28 @@ def compute(
     Running OOMMF...
     Field(...)
 
+    2. Computing values for MagnetoElastic energy term.
+
+    >>> import micromagneticmodel as mm
+    >>> import oommfc as oc
+    >>> import discretisedfield as df
+    ...
+    >>> region = df.Region(p1=(0, 0, 0), p2=(50e-9, 50e-9, 5e-9))
+    >>> mesh = df.Mesh(region=region, n=(10, 10, 2))
+    >>> system = mm.System(name='mel')
+    >>> system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1e5)
+    >>> system.energy = mm.MagnetoElastic(B1=1e6, B2=1e6,
+    ...                                   e_diag=(1e-6, 1e-6, 1e-6))
+    >>> oc.compute(system.energy.magnetoelastic.energy, system)
+    Running OOMMF...
+    1.2...e-23
+    >>> oc.compute(system.energy.magnetoelastic.density, system)
+    Running OOMMF...
+    Field(...)
+    >>> oc.compute(system.energy.magnetoelastic.effective_field, system)
+    Running OOMMF...
+    Field(...)
+
     """
     if system.T > 0:
         raise RuntimeError(
@@ -162,9 +210,11 @@ def compute(
             ][0]
             output = table.data[col][0].item()
         else:
-            output = table.data[
-                f"{oxs_class(func.__self__, system)}:{func.__self__.name}:Energy"
-            ][0].item()
+            _, cls_name = oxs_class(func.__self__, system)
+            # ODT files use class name without Oxs_ or YY_ prefix
+            # e.g., "FixedMEL:magnetoelastic:Energy" not "YY_FixedMEL:magnetoelastic:Energy"
+            col_name = f"{cls_name}:{func.__self__.name}:Energy"
+            output = table.data[col_name][0].item()
     else:
         output = df.Field.from_file(output_file)
         with contextlib.suppress(FileNotFoundError):
