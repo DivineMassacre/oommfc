@@ -218,3 +218,28 @@ class TestMagnetoElasticScript:
         assert "e_final = M(t)" in mif
         # Base strain should be user-provided values
         assert "1e-03" in mif or "0.001" in mif
+
+    def test_transform_tcl_strings_mode(self):
+        """Test tcl_strings mode for advanced control."""
+        system = mm.System(name="test_tcl")
+
+        import discretisedfield as df
+        region = df.Region(p1=(0, 0, 0), p2=(10e-9, 10e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(2, 2, 2))
+
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic(
+            B1=1e7,
+            B2=1e7,
+            e_diag=(0, 0, 0),
+            e_offdiag=(0, 0, 0),
+            tcl_strings={'script': 'return [list 1e-3 1e-3 1e-3 0 0 0]'},
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check tcl_strings mode
+        assert "YY_TransformStageMEL" in mif or "YY_FixedMEL" in mif
+        assert "Custom tcl script" in mif or "tcl_strings" in mif

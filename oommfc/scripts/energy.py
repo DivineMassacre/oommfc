@@ -379,6 +379,9 @@ def magnetoelastic_script(term, system):
     if hasattr(term, 'transform_script') and term.transform_script is not None:
         # YY_TransformStageMEL: transformation-based time-dependent strain
         mif += _transform_mel_script(term, system, B1name, B2name)
+    elif hasattr(term, 'tcl_strings') and term.tcl_strings is not None:
+        # YY_TransformStageMEL: tcl_strings-based time-dependent strain
+        mif += _transform_mel_script(term, system, B1name, B2name)
     elif hasattr(term, 'e_diag_files') and term.e_diag_files is not None:
         # YY_StageMEL: stage-based strain from files
         mif += _stage_mel_script(term, system, B1name, B2name)
@@ -536,6 +539,9 @@ def _transform_mel_script(term, system, B1name, B2name):
     # Generate transformation script if callable is provided
     if callable(term.transform_script):
         mif += _generate_transform_script(term, has_base_strain=has_base_strain)
+    elif hasattr(term, 'tcl_strings') and term.tcl_strings is not None:
+        # Use tcl_strings for advanced control (like Zeeman)
+        mif += _generate_transform_script_from_tcl(term)
 
     mif += "# MagnetoElastic (YY_TransformStageMEL)\n"
     mif += f"Specify YY_TransformStageMEL:{term.name} {{\n"
@@ -543,10 +549,15 @@ def _transform_mel_script(term, system, B1name, B2name):
     mif += f"  B2 {B2name}\n"
     mif += f"  e_diag_script strain_diag_{term.name}\n"
     mif += f"  e_offdiag_script strain_offdiag_{term.name}\n"
-    mif += f"  type {term.transform_type}\n"
+    
+    # Always include type - required by OOMMF
+    transform_type = getattr(term, 'transform_type', 'diagonal')
+    if transform_type is None:
+        transform_type = 'diagonal'
+    mif += f"  type {transform_type}\n"
 
     # REQUIRED: script field for YY_TransformStageMEL
-    if callable(term.transform_script):
+    if callable(term.transform_script) or (hasattr(term, 'tcl_strings') and term.tcl_strings):
         mif += f"  script transform_{term.name}\n"
 
     # Use default script_args (stage stage_time total_time) for compatibility
@@ -578,6 +589,33 @@ def _generate_strain_scripts(term):
         mif += "  # Note: Actual values must be pre-computed and passed via files\n"
         mif += "  error \"Stage-based strain with Python callable requires pre-computed OVf files\"\n"
         mif += "}\n\n"
+    
+    return mif
+
+
+def _generate_transform_script_from_tcl(term):
+    """Generate Tcl transformation script from tcl_strings dictionary.
+    
+    Parameters
+    ----------
+    term : MagnetoElastic
+        The magneto-elastic energy term with tcl_strings attribute.
+        
+    Returns
+    -------
+    str
+        MIF script for transformation using tcl_strings.
+    """
+    mif = ""
+    
+    tcl_strings = term.tcl_strings
+    
+    # Add script if provided
+    if 'script' in tcl_strings:
+        mif += f"proc transform_{term.name} {{ stage stage_time total_time }} {{\n"
+        mif += f"  # Custom tcl script from tcl_strings\n"
+        mif += f"  {tcl_strings['script']}\n"
+        mif += f"}}\n\n"
     
     return mif
 
