@@ -243,3 +243,135 @@ class TestMagnetoElasticScript:
         # Check tcl_strings mode
         assert "YY_TransformStageMEL" in mif or "YY_FixedMEL" in mif
         assert "Custom tcl script" in mif or "tcl_strings" in mif
+
+
+class TestMagnetoElasticSpatialVariation:
+    """Tests for spatially varying MEL parameters in MIF scripts."""
+
+    def test_mel_script_with_B1_field(self):
+        """Test MIF script generation with B1 as discretisedfield.Field."""
+        import discretisedfield as df
+
+        system = mm.System(name="test_B1_field")
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def B1_func(point):
+            x, y, z = point
+            return 1e7 * (1 + x / 100e-9)
+
+        B1_field = df.Field(mesh, nvdim=1, value=B1_func)
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic(
+            B1=B1_field,
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check MIF contains FileVectorField for B1
+        assert "Oxs_FileVectorField" in mif
+        assert "magnetoelastic_B1" in mif
+        assert "B1 magnetoelastic_B1_norm" in mif or "B1 magnetoelastic_B1" in mif
+        assert "YY_FixedMEL" in mif
+
+    def test_mel_script_with_e_diag_field(self):
+        """Test MIF script generation with e_diag as discretisedfield.Field."""
+        import discretisedfield as df
+
+        system = mm.System(name="test_e_diag_field")
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def strain_func(point):
+            x, y, z = point
+            return (1e-3 * z / 10e-9, 1e-3 * z / 10e-9, 1e-3 * z / 10e-9)
+
+        e_diag_field = df.Field(mesh, nvdim=3, value=strain_func)
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic(
+            B1=1e7,
+            B2=1e7,
+            e_diag=e_diag_field,
+            e_offdiag=(0, 0, 0),
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check MIF contains FileVectorField for e_diag
+        assert "Oxs_FileVectorField" in mif
+        assert "magnetoelastic_ediag" in mif
+        assert "e_diag_field magnetoelastic_ediag" in mif
+        assert "YY_FixedMEL" in mif
+
+    def test_mel_script_with_dict_regions(self):
+        """Test MIF script generation with dict (per-region) parameters."""
+        import discretisedfield as df
+
+        system = mm.System(name="test_dict")
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        subregion1 = df.Region(p1=(0, 0, 0), p2=(50e-9, 100e-9, 10e-9))
+        subregion2 = df.Region(p1=(50e-9, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(
+            region=region,
+            n=(20, 10, 2),
+            subregions={'left': subregion1, 'right': subregion2},
+        )
+
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic(
+            B1={'left': 1e7, 'right': 2e7, 'default': 1e7},
+            B2=1e7,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check MIF contains AtlasScalarField for B1
+        assert "Oxs_AtlasScalarField" in mif
+        assert "magnetoelastic_B1" in mif
+        assert "left" in mif
+        assert "right" in mif
+        assert "10000000.0" in mif or "1e7" in mif
+        assert "20000000.0" in mif or "2e7" in mif
+        assert "YY_FixedMEL" in mif
+
+    def test_mel_script_with_B2_field(self):
+        """Test MIF script generation with B2 as discretisedfield.Field."""
+        import discretisedfield as df
+        import numpy as np
+
+        system = mm.System(name="test_B2_field")
+        region = df.Region(p1=(0, 0, 0), p2=(100e-9, 100e-9, 10e-9))
+        mesh = df.Mesh(region=region, n=(10, 10, 2))
+
+        def B2_func(point):
+            x, y, z = point
+            return 1e7 * np.sin(np.pi * x / 100e-9)
+
+        B2_field = df.Field(mesh, nvdim=1, value=B2_func)
+        system.m = df.Field(mesh, nvdim=3, value=(1, 0, 0), norm=1)
+        system.energy = mm.MagnetoElastic(
+            B1=1e7,
+            B2=B2_field,
+            e_diag=(1e-3, 1e-3, 1e-3),
+            e_offdiag=(0, 0, 0),
+        )
+
+        from oommfc.scripts.energy import magnetoelastic_script
+        mel_term = system.energy.magnetoelastic
+        mif = magnetoelastic_script(mel_term, system)
+
+        # Check MIF contains FileVectorField for B2
+        assert "Oxs_FileVectorField" in mif
+        assert "magnetoelastic_B2" in mif
+        assert "B2 magnetoelastic_B2_norm" in mif or "B2 magnetoelastic_B2" in mif
