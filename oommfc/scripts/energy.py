@@ -863,9 +863,11 @@ def _spatiotemporal_zeeman_script(term, system):
     # Write global variables (exclude common names)
     exclude = {'pi', 'e', 't', 'x', 'y', 'z', 'H_static_x', 'H_static_y', 'H_static_z',
                'dt', 'stage_count', 'current_time', 'np', 'numpy', 'math'}
+    global_var_list = []
     for name, value in sorted(global_vars.items()):
         if name not in exclude:
             mif += f"set {name} {value:.15g}\n"
+            global_var_list.append(name)
     if global_vars:
         mif += "\n"
 
@@ -881,7 +883,11 @@ def _spatiotemporal_zeeman_script(term, system):
 
     # ========== SpatiotemporalField procedure ==========
     mif += "proc SpatiotemporalField { x y z } {\n"
-    mif += "  global H_static_x H_static_y H_static_z current_time\n"
+    # Build global statement with all needed variables
+    global_vars_str = "H_static_x H_static_y H_static_z current_time"
+    if global_var_list:
+        global_vars_str += " " + " ".join(global_var_list)
+    mif += f"  global {global_vars_str}\n"
     mif += "  set t $current_time\n"
     mif += "  # Static part\n"
     mif += "  set Hx $H_static_x\n"
@@ -903,9 +909,9 @@ def _spatiotemporal_zeeman_script(term, system):
 
         # Compute f(t) × mask(x,y,z)
         if isinstance(func_tcl, str):
-            # Scalar func
-            mif += f"  set f_{i} [{func_tcl}]\n"
-            
+            # Scalar func - wrap in expr for proper evaluation
+            mif += f"  set f_{i} [expr {{{func_tcl}}}]\n"
+
             if isinstance(mask_tcl, list):
                 # Scalar func × vector mask
                 mif += f"  set Hx [expr {{$Hx + $f_{i} * {mask_tcl[0]}}}]\n"
@@ -917,10 +923,10 @@ def _spatiotemporal_zeeman_script(term, system):
                 mif += f"  set Hy [expr {{$Hy + $f_{i} * {mask_tcl}}}]\n"
                 mif += f"  set Hz [expr {{$Hz + $f_{i} * {mask_tcl}}}]\n"
         else:
-            # Vector func
-            mif += f"  set fx_{i} [{func_tcl[0]}]\n"
-            mif += f"  set fy_{i} [{func_tcl[1]}]\n"
-            mif += f"  set fz_{i} [{func_tcl[2]}]\n"
+            # Vector func - wrap each component in expr
+            mif += f"  set fx_{i} [expr {{{func_tcl[0]}}}]\n"
+            mif += f"  set fy_{i} [expr {{{func_tcl[1]}}}]\n"
+            mif += f"  set fz_{i} [expr {{{func_tcl[2]}}}]\n"
 
             if isinstance(mask_tcl, str):
                 # Vector func × scalar mask
@@ -952,13 +958,13 @@ def _python_func_to_tcl(func, arg='t', args=None):
 
     Uses inspect.getsource() to extract function body and convert to Tcl.
     Supports common math functions: sin, cos, exp, sqrt, log, abs.
-    
+
     Enhanced to support:
     - Phase shifts: sin(omega*t + phi)
     - Mixed expressions: sin(a*t + b*x)
     - Nested functions: sin(cos(x))
     - Complex arithmetic: (a*b + c*d) / e
-    
+
     Parameters
     ----------
     func : callable
@@ -973,21 +979,21 @@ def _python_func_to_tcl(func, arg='t', args=None):
     -------
     str or list
         Tcl expression string(s)
-    
+
     Examples
     --------
     >>> _python_func_to_tcl(lambda t: np.sin(2*np.pi*1e9*t))
     'sin(6.283185307179586e+09 * $t)'
-    
+
     >>> _python_func_to_tcl(lambda t: np.sin(2*np.pi*1e9*t + np.pi/4))
     'sin(6.283185307179586e+09 * $t + 0.7853981633974483)'
-    
+
     >>> _python_func_to_tcl(lambda x: np.exp(-x**2), args=['x'])
     'exp(-$x^2)'
     """
     import inspect
     import re
-    
+
     if args is None:
         args = ['x', 'y', 'z']
 
@@ -998,53 +1004,63 @@ def _python_func_to_tcl(func, arg='t', args=None):
         # Cannot get source - use enhanced fallback with AST
         return _convert_func_fallback_enhanced(func, arg, args)
 
+    # Extract global variables for later substitution
+    global_var_names = []
+    if hasattr(func, '__globals__'):
+        for name, value in func.__globals__.items():
+            if isinstance(value, (int, float)) and not name.startswith('_'):
+                global_var_names.append(name)
+
     # Parse and convert source
-    result = _convert_source_to_tcl(source, arg, args, func)
-    
+    result = _convert_source_to_tcl(source, arg, args, func, global_var_names)
+
     # If conversion failed, try enhanced fallback
     if result is None:
         return _convert_func_fallback_enhanced(func, arg, args)
-    
+
     return result
 
 
-def _convert_source_to_tcl(source, arg, args, func=None):
+def _convert_source_to_tcl(source, arg, args, func=None, global_var_names=None):
     """Convert Python source code to Tcl expression.
-    
+
     Global variables (H0, omega, k, etc.) are defined in MIF,
     so we just need to convert function syntax and leave variable names as-is.
     """
     import re
-    
+
+    if global_var_names is None:
+        global_var_names = []
+
     # Extract expression from lambda or def
     lambda_match = re.search(r'lambda\s+([^:]+):\s*(.+)', source, re.DOTALL)
     if lambda_match:
         params = lambda_match.group(1).strip()
         expr = lambda_match.group(2).strip()
         expr = expr.split('#')[0].strip().rstrip('\n').strip()
-        
+
         # Vector function?
         if expr.startswith('(') or expr.startswith('['):
             inner = expr[1:-1]
             components = _split_components(inner)
-            return [_convert_expr_to_tcl(comp.strip(), params, args) for comp in components]
+            return [_convert_expr_to_tcl(comp.strip(), params, args, global_var_names=global_var_names) for comp in components]
         else:
-            return _convert_expr_to_tcl(expr, params, args)
-    
+            return _convert_expr_to_tcl(expr, params, args, global_var_names=global_var_names)
+
     # Def pattern - handle docstrings and multi-line
     # Match: def name(args): ... return EXPR
     def_match = re.search(r'def\s+\w+\s*\(([^)]*)\)\s*:.*?return\s+(.+?)(?:\n\s{4}\S|\n\n|\Z)', source, re.DOTALL)
     if def_match:
         params = def_match.group(1).strip()
         expr = def_match.group(2).strip().split('#')[0].strip()
-        
+
         if expr.startswith('(') or expr.startswith('['):
             inner = expr[1:-1]
             components = _split_components(inner)
-            return [_convert_expr_to_tcl(comp.strip(), params, args) for comp in components]
+            return [_convert_expr_to_tcl(comp.strip(), params, args, global_var_names=global_var_names) for comp in components]
         else:
-            return _convert_expr_to_tcl(expr, params, args)
-    
+            return _convert_expr_to_tcl(expr, params, args, global_var_names=global_var_names)
+
     return None
 
 
@@ -1089,9 +1105,9 @@ def _split_components(expr):
     return cleaned
 
 
-def _convert_expr_to_tcl(expr, params, args, local_vars=None):
+def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=None):
     """Convert Python expression to Tcl with enhanced support.
-    
+
     Supports:
     - Math functions: sin, cos, tan, exp, log, sqrt, abs
     - Operators: +, -, *, /, ** (power)
@@ -1100,7 +1116,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
     - Nested functions: sin(cos(x))
     - Parentheses and complex arithmetic
     - Variable substitution from local_vars dict
-    
+
     Parameters
     ----------
     expr : str
@@ -1111,17 +1127,19 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
         Argument names for spatial functions
     local_vars : dict, optional
         Dictionary of variable names to their values for substitution
-    
+    global_var_names : list, optional
+        List of global variable names to replace with $var
+
     Returns
     -------
     str
         Tcl expression
     """
     import re
-    
+
     # Determine which arg to use for substitution
     param_list = [p.strip() for p in params.split(',')]
-    
+
     # Step 1: Substitute variables from local_vars BEFORE any other processing
     if local_vars:
         # Sort by length (longest first) to avoid partial replacements
@@ -1134,10 +1152,10 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
             else:
                 formatted_value = str(var_value)
             expr = re.sub(pattern, formatted_value, expr)
-    
+
     # Step 2: Pre-process - evaluate numeric expressions where possible
     expr = _evaluate_numeric_constants(expr)
-    
+
     # Step 3: Replacements for Python → Tcl
     replacements = [
         # Math functions (order matters - do numpy. before np.)
@@ -1151,7 +1169,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
         (r'numpy\.abs\s*\(', 'abs('),
         (r'numpy\.floor\s*\(', 'floor('),
         (r'numpy\.ceil\s*\(', 'ceil('),
-        
+
         (r'np\.sin\s*\(', 'sin('),
         (r'np\.cos\s*\(', 'cos('),
         (r'np\.tan\s*\(', 'tan('),
@@ -1162,7 +1180,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
         (r'np\.abs\s*\(', 'abs('),
         (r'np\.floor\s*\(', 'floor('),
         (r'np\.ceil\s*\(', 'ceil('),
-        
+
         # Math module functions
         (r'math\.sin\s*\(', 'sin('),
         (r'math\.cos\s*\(', 'cos('),
@@ -1170,7 +1188,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
         (r'math\.exp\s*\(', 'exp('),
         (r'math\.log\s*\(', 'log('),
         (r'math\.sqrt\s*\(', 'sqrt('),
-        
+
         # Constants
         (r'numpy\.pi\b', '3.14159265358979'),
         (r'np\.pi\b', '3.14159265358979'),
@@ -1178,20 +1196,20 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
         (r'numpy\.e\b', '2.71828182845905'),
         (r'np\.e\b', '2.71828182845905'),
         (r'math\.e\b', '2.71828182845905'),
-        
+
         # Operators
         (r'\*\*', '^'),  # Power (must be before *)
         (r'//', '/'),    # Floor division
     ]
-    
+
     tcl_expr = expr
     for pattern, replacement in replacements:
         tcl_expr = re.sub(pattern, replacement, tcl_expr)
-    
-    # Step 4: Replace variables with $var
+
+    # Step 4: Replace function parameters with $var
     # Sort by length (longest first) to avoid partial replacements
     param_list_sorted = sorted(param_list, key=len, reverse=True)
-    
+
     for param in param_list_sorted:
         param = param.strip()
         if param:
@@ -1199,21 +1217,29 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None):
             # Use word boundaries but be careful with underscores
             pattern = r'(?<![a-zA-Z0-9_])' + re.escape(param) + r'(?![a-zA-Z0-9_])'
             tcl_expr = re.sub(pattern, '$' + param, tcl_expr)
-    
-    # Step 5: Clean up - remove extra whitespace but preserve structure
+
+    # Step 5: Replace global variable names with $var
+    if global_var_names:
+        # Sort by length (longest first) to avoid partial replacements
+        global_var_names_sorted = sorted(global_var_names, key=len, reverse=True)
+        for var_name in global_var_names_sorted:
+            pattern = r'(?<![a-zA-Z0-9_])' + re.escape(var_name) + r'(?![a-zA-Z0-9_])'
+            tcl_expr = re.sub(pattern, '$' + var_name, tcl_expr)
+
+    # Step 6: Clean up - remove extra whitespace but preserve structure
     # Remove spaces around operators for cleaner output
     tcl_expr = re.sub(r'\s*\+\s*', ' + ', tcl_expr)
     tcl_expr = re.sub(r'\s*-\s*', ' - ', tcl_expr)
     tcl_expr = re.sub(r'\s*\*\s*', '*', tcl_expr)
     tcl_expr = re.sub(r'\s*/\s*', '/', tcl_expr)
     tcl_expr = re.sub(r'\s*\^\s*', '^', tcl_expr)
-    
+
     # Remove leading/trailing whitespace from the whole expression
     tcl_expr = tcl_expr.strip()
-    
+
     # Remove any trailing commas (from tuple unpacking issues)
     tcl_expr = tcl_expr.rstrip(',')
-    
+
     return tcl_expr
 
 
