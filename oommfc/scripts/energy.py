@@ -7,10 +7,25 @@ import discretisedfield as df
 import oommfc as oc
 
 
-def energy_script(system):
+def energy_script(system, **kwargs):
+    """Generate MIF script for energy terms.
+    
+    Parameters
+    ----------
+    system : micromagneticmodel.System
+        System object.
+    **kwargs
+        Additional keyword arguments (e.g., 'n' for stage_count from TimeDriver).
+    """
     mif = ""
     for term in system.energy:
-        mif += globals()[f"{term.__class__.__name__.lower()}_script"](term, system)
+        # Pass kwargs only to functions that accept them
+        func = globals()[f"{term.__class__.__name__.lower()}_script"]
+        try:
+            mif += func(term, system, **kwargs)
+        except TypeError:
+            # Fallback for functions that don't accept kwargs yet
+            mif += func(term, system)
 
     return mif
 
@@ -50,11 +65,22 @@ def exchange_script(term, system):
     return mif
 
 
-def zeeman_script(term, system):
+def zeeman_script(term, system, **kwargs):
+    """Generate MIF script for Zeeman energy term.
+    
+    Parameters
+    ----------
+    term : micromagneticmodel.Zeeman
+        Zeeman energy term.
+    system : micromagneticmodel.System
+        System object.
+    **kwargs
+        Additional keyword arguments (e.g., 'n' for stage_count from TimeDriver).
+    """
     # Check for spatiotemporal terms first
     if getattr(term, 'has_time_terms', False):
-        return _spatiotemporal_zeeman_script(term, system)
-    
+        return _spatiotemporal_zeeman_script(term, system, **kwargs)
+
     Hmif, Hname = oc.scripts.setup_vector_parameter(term.H, f"{term.name}_H")
 
     mif = ""
@@ -815,11 +841,24 @@ def rkky_script(term, system):
     return mif
 
 
-def _spatiotemporal_zeeman_script(term, system):
+def _spatiotemporal_zeeman_script(term, system, **kwargs):
     """Generate MIF script for spatiotemporal Zeeman field.
 
     Uses Oxs_StageZeeman + Oxs_ScriptVectorField approach:
     H(x,y,z,t) = H_static + Σᵢ [fᵢ(t) × maskᵢ(x,y,z)]
+    
+    Parameters
+    ----------
+    term : micromagneticmodel.Zeeman
+        Zeeman energy term with spatiotemporal terms.
+    system : micromagneticmodel.System
+        System object.
+    **kwargs
+        Additional keyword arguments from driver. Key argument:
+        
+        - 'n' : int
+            Number of stages from TimeDriver.drive(n=...).
+            Used to set stage_count if term._stage_count is None.
     """
     mif = "# ========== Zeeman: Spatiotemporal field ==========\n"
 
@@ -836,30 +875,62 @@ def _spatiotemporal_zeeman_script(term, system):
         mif += "set H_static_z 0\n"
 
     # Time step and stage count
-    # TODO: Get from driver or use default
+    # Priority: 1) term._stage_count, 2) kwargs['n'] from driver, 3) default 100
     dt = getattr(term, '_dt', 1e-13)
-    stage_count = getattr(term, '_stage_count', 100)
-
+    stage_count = getattr(term, '_stage_count', None)
+    
+    if stage_count is None:
+        # Try to get from driver's n parameter
+        stage_count = kwargs.get('n', 100)
+    
     mif += f"set dt {dt}\n"
     mif += f"set stage_count {stage_count}\n\n"
 
     # Global variable for current time
     mif += "set current_time 0\n\n"
     
-    # Extract global variables from functions and write to MIF
+    # Extract global variables and closure variables from functions
     global_vars = {}
-    for func, mask in term._terms:
-        if hasattr(func, '__globals__'):
-            for name, value in func.__globals__.items():
-                if isinstance(value, (int, float)) and not name.startswith('_'):
-                    if name not in global_vars:
-                        global_vars[name] = value
-        if mask is not None and hasattr(mask, '__globals__'):
-            for name, value in mask.__globals__.items():
-                if isinstance(value, (int, float)) and not name.startswith('_'):
-                    if name not in global_vars:
-                        global_vars[name] = value
     
+    def _extract_vars_from_callable(callable_obj):
+        """Extract variables from callable's globals and closure."""
+        vars_dict = {}
+        
+        # Extract from __globals__
+        if hasattr(callable_obj, '__globals__'):
+            for name, value in callable_obj.__globals__.items():
+                if isinstance(value, (int, float)) and not name.startswith('_'):
+                    vars_dict[name] = value
+        
+        # Extract from closure (for lambda functions with captured variables)
+        if hasattr(callable_obj, '__closure__') and callable_obj.__closure__:
+            code = callable_obj.__code__
+            freevars = getattr(code, 'co_freevars', ())
+            for i, cell in enumerate(callable_obj.__closure__):
+                try:
+                    value = cell.cell_contents
+                    if isinstance(value, (int, float)):
+                        # Get variable name from freevars if available
+                        if i < len(freevars):
+                            name = freevars[i]
+                        else:
+                            name = f'_var_{i}'
+                        vars_dict[name] = value
+                except ValueError:
+                    pass
+        
+        return vars_dict
+    
+    for func, mask in term._terms:
+        # Extract from func
+        func_vars = _extract_vars_from_callable(func)
+        global_vars.update(func_vars)
+        
+        # Extract from mask
+        if mask is not None:
+            mask_vars = _extract_vars_from_callable(mask)
+            global_vars.update(mask_vars)
+
     # Write global variables (exclude common names)
     exclude = {'pi', 'e', 't', 'x', 'y', 'z', 'H_static_x', 'H_static_y', 'H_static_z',
                'dt', 'stage_count', 'current_time', 'np', 'numpy', 'math'}

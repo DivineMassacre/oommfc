@@ -2,6 +2,17 @@ import oommfc as oc
 
 
 def system_script(system, ovf_format, **kwargs):
+    """Generate MIF script for the system.
+    
+    Parameters
+    ----------
+    system : micromagneticmodel.System
+        System object.
+    ovf_format : str
+        Output format ('bin8', 'bin4', or 'txt').
+    **kwargs
+        Additional keyword arguments (e.g., 'n' for stage_count from TimeDriver).
+    """
     if ovf_format == "bin8":
         output_format = "binary 8"
     elif ovf_format == "bin4":
@@ -21,7 +32,7 @@ def system_script(system, ovf_format, **kwargs):
 
     # Mesh and energy scripts.
     mif += oc.scripts.mesh_script(system.m.mesh)
-    mif += oc.scripts.energy_script(system)
+    mif += oc.scripts.energy_script(system, **kwargs)
 
     # Magnetisation script.
     m0mif, _, _ = oc.scripts.setup_m0(system.m, "m0")
