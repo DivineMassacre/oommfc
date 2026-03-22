@@ -183,7 +183,7 @@ class Driver(mm.ExternalDriver):
                 self._time_dependence(term=term, **kwargs)
 
         with uu.changedir(dirname):
-            mif = oc.scripts.system_script(system, ovf_format=ovf_format)
+            mif = oc.scripts.system_script(system, ovf_format=ovf_format, **kwargs)
             mif += oc.scripts.driver_script(
                 self,
                 system,

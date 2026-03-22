@@ -878,30 +878,63 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
     # Priority: 1) term._stage_count, 2) kwargs['n'] from driver, 3) default 100
     dt = getattr(term, '_dt', 1e-13)
     stage_count = getattr(term, '_stage_count', None)
-    
+
     if stage_count is None:
         # Try to get from driver's n parameter
         stage_count = kwargs.get('n', 100)
-    
+
     mif += f"set dt {dt}\n"
     mif += f"set stage_count {stage_count}\n\n"
 
     # Global variable for current time
     mif += "set current_time 0\n\n"
+
+    # Add Tcl helper functions for extended math support
+    mif += "# ========== Extended math functions ==========\n"
+    mif += "proc tanh {x} {\n"
+    mif += "  set exp2x [expr {exp(2*$x)}]\n"
+    mif += "  return [expr {($exp2x - 1) / ($exp2x + 1)}]\n"
+    mif += "}\n\n"
     
+    mif += "proc sinh {x} {\n"
+    mif += "  return [expr {(exp($x) - exp(-$x)) / 2}]\n"
+    mif += "}\n\n"
+
+    mif += "proc cosh {x} {\n"
+    mif += "  return [expr {(exp($x) + exp(-$x)) / 2}]\n"
+    mif += "}\n\n"
+
+    mif += "proc asin {x} {\n"
+    mif += "  return [expr {atan2($x, sqrt(1 - $x*$x))}]\n"
+    mif += "}\n\n"
+
+    mif += "proc acos {x} {\n"
+    mif += "  return [expr {atan2(sqrt(1 - $x*$x), $x)}]\n"
+    mif += "}\n\n"
+
+    mif += "proc log2 {x} {\n"
+    mif += "  return [expr {log($x) / log(2)}]\n"
+    mif += "}\n\n"
+
     # Extract global variables and closure variables from functions
     global_vars = {}
     
     def _extract_vars_from_callable(callable_obj):
         """Extract variables from callable's globals and closure."""
         vars_dict = {}
-        
+
+        # Check if decorated with @zeeman_func
+        if getattr(callable_obj, '__is_zeeman_func__', False):
+            # Use stored __zeeman_globals__
+            zeeman_globals = getattr(callable_obj, '__zeeman_globals__', {})
+            vars_dict.update(zeeman_globals)
+
         # Extract from __globals__
         if hasattr(callable_obj, '__globals__'):
             for name, value in callable_obj.__globals__.items():
                 if isinstance(value, (int, float)) and not name.startswith('_'):
                     vars_dict[name] = value
-        
+
         # Extract from closure (for lambda functions with captured variables)
         if hasattr(callable_obj, '__closure__') and callable_obj.__closure__:
             code = callable_obj.__code__
@@ -918,7 +951,7 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
                         vars_dict[name] = value
                 except ValueError:
                     pass
-        
+
         return vars_dict
     
     for func, mask in term._terms:
@@ -1035,6 +1068,7 @@ def _python_func_to_tcl(func, arg='t', args=None):
     - Mixed expressions: sin(a*t + b*x)
     - Nested functions: sin(cos(x))
     - Complex arithmetic: (a*b + c*d) / e
+    - Decorated functions with @zeeman_func decorator
 
     Parameters
     ----------
@@ -1061,6 +1095,11 @@ def _python_func_to_tcl(func, arg='t', args=None):
 
     >>> _python_func_to_tcl(lambda x: np.exp(-x**2), args=['x'])
     'exp(-$x^2)'
+    
+    Notes
+    -----
+    If the function is decorated with @zeeman_func, the decorator's
+    stored source code and globals are used for more reliable conversion.
     """
     import inspect
     import re
@@ -1068,11 +1107,25 @@ def _python_func_to_tcl(func, arg='t', args=None):
     if args is None:
         args = ['x', 'y', 'z']
 
-    # Try to get source code
+    # Check if function is decorated with @zeeman_func
+    if getattr(func, '__is_zeeman_func__', False):
+        # Use stored source and globals from decorator
+        source = getattr(func, '__zeeman_source__', None)
+        globals_dict = getattr(func, '__zeeman_globals__', {})
+        
+        if source and not source.startswith('<'):
+            # Valid source code - use it
+            global_var_names = list(globals_dict.keys())
+            result = _convert_source_to_tcl(source, arg, args, func, global_var_names)
+            if result is not None:
+                return result
+        # Fallback to normal processing if decorator data is invalid
+    
+    # Try to get source code normally
     try:
         source = inspect.getsource(func)
-    except (IOError, TypeError, OSError) as e:
-        # Cannot get source - use enhanced fallback with AST
+    except (IOError, TypeError, OSError, IndentationError):
+        # Cannot get source - use enhanced fallback
         return _convert_func_fallback_enhanced(func, arg, args)
 
     # Extract global variables for later substitution
@@ -1230,12 +1283,47 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
     # Step 3: Replacements for Python → Tcl
     replacements = [
         # Math functions (order matters - do numpy. before np.)
+        # Hyperbolic functions
+        (r'numpy\.tanh\s*\(', 'tanh('),
+        (r'np\.tanh\s*\(', 'tanh('),
+        (r'math\.tanh\s*\(', 'tanh('),
+        (r'numpy\.sinh\s*\(', 'sinh('),
+        (r'np\.sinh\s*\(', 'sinh('),
+        (r'math\.sinh\s*\(', 'sinh('),
+        (r'numpy\.cosh\s*\(', 'cosh('),
+        (r'np\.cosh\s*\(', 'cosh('),
+        (r'math\.cosh\s*\(', 'cosh('),
+        
+        # Inverse trigonometric functions
+        (r'numpy\.arcsin\s*\(', 'asin('),
+        (r'np\.arcsin\s*\(', 'asin('),
+        (r'math\.arcsin\s*\(', 'asin('),
+        (r'numpy\.arccos\s*\(', 'acos('),
+        (r'np\.arccos\s*\(', 'acos('),
+        (r'math\.arccos\s*\(', 'acos('),
+        (r'numpy\.arctan\s*\(', 'atan('),
+        (r'np\.arctan\s*\(', 'atan('),
+        (r'math\.arctan\s*\(', 'atan('),
+        (r'numpy\.arctan2\s*\(', 'atan2('),
+        (r'np\.arctan2\s*\(', 'atan2('),
+        (r'math\.arctan2\s*\(', 'atan2('),
+
+        # Other math functions (sign and clip removed - not supported by Tcl)
+        (r'numpy\.round\s*\(', 'round('),
+        (r'np\.round\s*\(', 'round('),
+        (r'numpy\.maximum\s*\(', 'max('),
+        (r'np\.maximum\s*\(', 'max('),
+        (r'numpy\.minimum\s*\(', 'min('),
+        (r'np\.minimum\s*\(', 'min('),
+
+        # Trigonometric functions
         (r'numpy\.sin\s*\(', 'sin('),
         (r'numpy\.cos\s*\(', 'cos('),
         (r'numpy\.tan\s*\(', 'tan('),
         (r'numpy\.exp\s*\(', 'exp('),
         (r'numpy\.log\s*\(', 'log('),
         (r'numpy\.log10\s*\(', 'log10('),
+        (r'numpy\.log2\s*\(', 'log2('),
         (r'numpy\.sqrt\s*\(', 'sqrt('),
         (r'numpy\.abs\s*\(', 'abs('),
         (r'numpy\.floor\s*\(', 'floor('),
@@ -1247,6 +1335,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
         (r'np\.exp\s*\(', 'exp('),
         (r'np\.log\s*\(', 'log('),
         (r'np\.log10\s*\(', 'log10('),
+        (r'np\.log2\s*\(', 'log2('),
         (r'np\.sqrt\s*\(', 'sqrt('),
         (r'np\.abs\s*\(', 'abs('),
         (r'np\.floor\s*\(', 'floor('),
@@ -1258,7 +1347,10 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
         (r'math\.tan\s*\(', 'tan('),
         (r'math\.exp\s*\(', 'exp('),
         (r'math\.log\s*\(', 'log('),
+        (r'math\.log10\s*\(', 'log10('),
+        (r'math\.log2\s*\(', 'log2('),
         (r'math\.sqrt\s*\(', 'sqrt('),
+        (r'math\.abs\s*\(', 'abs('),
 
         # Constants
         (r'numpy\.pi\b', '3.14159265358979'),
@@ -1269,13 +1361,18 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
         (r'math\.e\b', '2.71828182845905'),
 
         # Operators
-        (r'\*\*', '^'),  # Power (must be before *)
+        # Note: ** is converted to pow() because ^ is XOR in Tcl, not power
         (r'//', '/'),    # Floor division
     ]
 
     tcl_expr = expr
     for pattern, replacement in replacements:
         tcl_expr = re.sub(pattern, replacement, tcl_expr)
+
+    # Convert ** to pow() for Tcl compatibility
+    # Pattern: base**exponent -> pow(base, exponent)
+    # Handle simple cases like x**2, but not complex expressions
+    tcl_expr = re.sub(r'([a-zA-Z_$][a-zA-Z0-9_$]*)\*\*(\d+)', r'pow(\1,\2)', tcl_expr)
 
     # Step 4: Replace function parameters with $var
     # Sort by length (longest first) to avoid partial replacements
@@ -1299,8 +1396,10 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
 
     # Step 6: Clean up - remove extra whitespace but preserve structure
     # Remove spaces around operators for cleaner output
+    # IMPORTANT: Do NOT add spaces around '-' to preserve scientific notation (1e-9)
     tcl_expr = re.sub(r'\s*\+\s*', ' + ', tcl_expr)
-    tcl_expr = re.sub(r'\s*-\s*', ' - ', tcl_expr)
+    # Skip '-' to preserve scientific notation: 1e-9 NOT 1e - 9
+    # tcl_expr = re.sub(r'\s*-\s*', ' - ', tcl_expr)  # DISABLED
     tcl_expr = re.sub(r'\s*\*\s*', '*', tcl_expr)
     tcl_expr = re.sub(r'\s*/\s*', '/', tcl_expr)
     tcl_expr = re.sub(r'\s*\^\s*', '^', tcl_expr)
@@ -1316,17 +1415,35 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
 
 def _evaluate_numeric_constants(expr):
     """Pre-evaluate numeric constants in expression.
-    
+
     Converts expressions like '2 * np.pi * 1e9' to '6.283185307179586e+09'
     by safely evaluating numeric subexpressions.
+
+    IMPORTANT: Preserves scientific notation (1e-9) without spaces.
     """
     import re
     import math
-    
+
+    # First, protect scientific notation from being split
+    # Replace 1e-9 with placeholder, then restore later
+    scientific_pattern = r'(\d+\.?\d*[eE][+-]?\d+)'
+    scientific_matches = {}
+    placeholder_idx = 0
+
+    def save_scientific(match):
+        nonlocal placeholder_idx
+        placeholder = f'__SCI_{placeholder_idx}__'
+        scientific_matches[placeholder] = match.group(1)
+        placeholder_idx += 1
+        return placeholder
+
+    # Save scientific notation numbers
+    expr_protected = re.sub(scientific_pattern, save_scientific, expr)
+
     # Try to evaluate simple numeric expressions
     # Pattern: sequence of numbers, operators, and math constants
     numeric_pattern = r'(\d+\.?\d*(?:e[+-]?\d+)?|\bnp\.pi\b|\bnp\.e\b|\bmath\.pi\b|\bmath\.e\b)(?:\s*[\*/]\s*(\d+\.?\d*(?:e[+-]?\d+)?|\bnp\.pi\b|\bnp\.e\b|\bmath\.pi\b|\bmath\.e\b))*'
-    
+
     def eval_match(match):
         subexpr = match.group(0)
         try:
@@ -1335,25 +1452,31 @@ def _evaluate_numeric_constants(expr):
             subexpr_eval = subexpr_eval.replace('np.e', str(math.e))
             subexpr_eval = subexpr_eval.replace('math.pi', str(math.pi))
             subexpr_eval = subexpr_eval.replace('math.e', str(math.e))
-            
+
             # Safely evaluate
             result = eval(subexpr_eval)
             if isinstance(result, (int, float)):
-                # Format nicely
+                # Format nicely - use scientific notation for very small/large numbers
                 if isinstance(result, int) or result == int(result):
                     return str(int(result))
+                elif abs(result) < 1e-4 or abs(result) > 1e6:
+                    return f'{result:.15e}'
                 else:
                     return f'{result:.15g}'
         except:
             pass
         return subexpr
-    
+
     # Only evaluate in multiplication/division contexts
     # to avoid breaking function arguments
-    expr = re.sub(r'(?<=[\(\+\-,])\s*(\d+\.?\d*(?:e[+-]?\d+)?(?:\s*\*\s*\d+\.?\d*(?:e[+-]?\d+)?)+)\s*(?=[\)\*/,])', 
-                  lambda m: str(eval(m.group(1).replace(' ', ''))), expr)
-    
-    return expr
+    expr_evaluated = re.sub(r'(?<=[\(\+\-,])\s*(\d+\.?\d*(?:e[+-]?\d+)?(?:\s*\*\s*\d+\.?\d*(?:e[+-]?\d+)?)+)\s*(?=[\)\*/,])',
+                  lambda m: str(eval(m.group(1).replace(' ', ''))), expr_protected)
+
+    # Restore scientific notation numbers
+    for placeholder, value in scientific_matches.items():
+        expr_evaluated = expr_evaluated.replace(placeholder, value)
+
+    return expr_evaluated
 
 
 def _convert_func_fallback_enhanced(func, arg, args):
