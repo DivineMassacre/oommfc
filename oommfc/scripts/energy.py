@@ -7,6 +7,34 @@ import discretisedfield as df
 import oommfc as oc
 
 
+# ============================================================================
+# Исключения для ошибок конвертации
+# ============================================================================
+
+class ConversionError(Exception):
+    """Exception raised when Python to Tcl conversion fails.
+    
+    Attributes
+    ----------
+    expression : str
+        Python expression that failed to convert
+    reason : str
+        Human-readable explanation of the failure
+    suggestion : str, optional
+        Suggested fix for the user
+    """
+    def __init__(self, expression: str, reason: str, suggestion: str = None):
+        self.expression = expression
+        self.reason = reason
+        self.suggestion = suggestion
+        
+        message = f"Failed to convert '{expression}': {reason}"
+        if suggestion:
+            message += f"\nSuggestion: {suggestion}"
+        
+        super().__init__(message)
+
+
 def energy_script(system, **kwargs):
     """Generate MIF script for energy terms.
     
@@ -1293,7 +1321,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
         (r'numpy\.cosh\s*\(', 'cosh('),
         (r'np\.cosh\s*\(', 'cosh('),
         (r'math\.cosh\s*\(', 'cosh('),
-        
+
         # Inverse trigonometric functions
         (r'numpy\.arcsin\s*\(', 'asin('),
         (r'np\.arcsin\s*\(', 'asin('),
@@ -1361,7 +1389,7 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
         (r'math\.e\b', '2.71828182845905'),
 
         # Operators
-        # Note: ** is converted to pow() because ^ is XOR in Tcl, not power
+        # Note: ** is converted separately by _convert_power_to_tcl()
         (r'//', '/'),    # Floor division
     ]
 
@@ -1369,10 +1397,8 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
     for pattern, replacement in replacements:
         tcl_expr = re.sub(pattern, replacement, tcl_expr)
 
-    # Convert ** to pow() for Tcl compatibility
-    # Pattern: base**exponent -> pow(base, exponent)
-    # Handle simple cases like x**2, but not complex expressions
-    tcl_expr = re.sub(r'([a-zA-Z_$][a-zA-Z0-9_$]*)\*\*(\d+)', r'pow(\1,\2)', tcl_expr)
+    # 🔴 Улучшенная конвертация ** → pow()
+    tcl_expr = _convert_power_to_tcl(tcl_expr)
 
     # Step 4: Replace function parameters with $var
     # Sort by length (longest first) to avoid partial replacements
@@ -1410,7 +1436,123 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
     # Remove any trailing commas (from tuple unpacking issues)
     tcl_expr = tcl_expr.rstrip(',')
 
+    # 🔴 Валидация результата конвертации
+    _validate_tcl_result(tcl_expr, expr)
+
     return tcl_expr
+
+
+def _convert_power_to_tcl(expr):
+    """Convert a**b to pow(a,b) with improved support.
+    
+    Supports:
+    - Simple: x**2 → pow(x,2)
+    - Numeric base: 2**10 → pow(2,10)
+    - Float exponent: x**0.5 → pow(x,0.5)
+    - Parenthesized: (x+y)**2 → pow((x+y),2)
+    - Numeric powers: 2**10 → 1024 (evaluated)
+    - With spaces: x ** 2 → pow(x,2)
+    
+    Parameters
+    ----------
+    expr : str
+        Python expression with ** operator
+    
+    Returns
+    -------
+    str
+        Tcl expression with pow() function
+    """
+    import re
+    
+    # Случай 1: (expr)**(number) - скобки и число (с пробелами)
+    expr = re.sub(
+        r'(\([^)]+\))\s*\*\*\s*(\d+\.?\d*)',
+        r'pow(\1,\2)',
+        expr
+    )
+    
+    # Случай 2: (expr)**(name) - скобки и переменная (с пробелами)
+    expr = re.sub(
+        r'(\([^)]+\))\s*\*\*\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
+        r'pow(\1,\2)',
+        expr
+    )
+    
+    # Случай 3: name**number - переменная и число (с пробелами)
+    expr = re.sub(
+        r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\*\*\s*(\d+\.?\d*)',
+        r'pow(\1,\2)',
+        expr
+    )
+    
+    # Случай 4: name**name - переменная и переменная (с пробелами)
+    expr = re.sub(
+        r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\*\*\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
+        r'pow(\1,\2)',
+        expr
+    )
+    
+    # Случай 5: number**number - вычисляется сразу (с пробелами)
+    def eval_power(match):
+        base = float(match.group(1))
+        exp = float(match.group(2))
+        result = base ** exp
+        return f'{result:.15g}'
+    
+    expr = re.sub(
+        r'(\d+\.?\d*)\s*\*\*\s*(\d+\.?\d*)',
+        eval_power,
+        expr
+    )
+    
+    return expr
+
+
+def _validate_tcl_result(tcl_expr: str, original_expr: str) -> None:
+    """Validate that converted Tcl expression is valid.
+    
+    Checks for common conversion errors and raises ConversionError
+    with helpful messages.
+    
+    Parameters
+    ----------
+    tcl_expr : str
+        Converted Tcl expression
+    original_expr : str
+        Original Python expression (for error messages)
+    
+    Raises
+    ------
+    ConversionError
+        If Tcl expression contains Python syntax
+    """
+    errors = []
+    
+    # Проверка на неконвертированный оператор степени
+    if '**' in tcl_expr:
+        errors.append(
+            "Power operator '**' not converted. Use pow(base, exponent) instead."
+        )
+    
+    # Проверка на неконвертированные префиксы NumPy
+    if 'np.' in tcl_expr or 'numpy.' in tcl_expr:
+        errors.append(
+            "NumPy prefix not removed. Use 'sin(x)' instead of 'np.sin(x)'."
+        )
+    
+    # Проверка на неконвертированный префикс math
+    if 'math.' in tcl_expr:
+        errors.append(
+            "Math prefix not removed. Use 'sin(x)' instead of 'math.sin(x)'."
+        )
+    
+    if errors:
+        raise ConversionError(
+            expression=original_expr,
+            reason="; ".join(errors),
+            suggestion="Check supported functions: sin, cos, tan, exp, log, sqrt, abs, min, max, etc."
+        )
 
 
 def _evaluate_numeric_constants(expr):
