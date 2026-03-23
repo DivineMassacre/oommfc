@@ -1452,6 +1452,7 @@ def _convert_power_to_tcl(expr):
     - Parenthesized: (x+y)**2 → pow((x+y),2)
     - Numeric powers: 2**10 → 1024 (evaluated)
     - With spaces: x ** 2 → pow(x,2)
+    - Scientific notation: (1e-12)**2 → pow(1e-12,2)
     
     Parameters
     ----------
@@ -1464,6 +1465,25 @@ def _convert_power_to_tcl(expr):
         Tcl expression with pow() function
     """
     import re
+    
+    # Случай 0: (number)**(number) - вычисляется сразу
+    # Важно: обрабатываем ДО других случаев со скобками
+    def eval_power(match):
+        base_str = match.group(1)
+        exp_str = match.group(2)
+        try:
+            base = float(base_str)
+            exp = float(exp_str)
+            result = base ** exp
+            return f'{result:.15g}'
+        except:
+            return match.group(0)  # Оставляем как есть если не удалось
+    
+    expr = re.sub(
+        r'\((\d+\.?\d*[eE][+-]?\d+)\)\s*\*\*\s*(\d+\.?\d*)',
+        eval_power,
+        expr
+    )
     
     # Случай 1: (expr)**(number) - скобки и число (с пробелами)
     expr = re.sub(
@@ -1494,12 +1514,6 @@ def _convert_power_to_tcl(expr):
     )
     
     # Случай 5: number**number - вычисляется сразу (с пробелами)
-    def eval_power(match):
-        base = float(match.group(1))
-        exp = float(match.group(2))
-        result = base ** exp
-        return f'{result:.15g}'
-    
     expr = re.sub(
         r'(\d+\.?\d*)\s*\*\*\s*(\d+\.?\d*)',
         eval_power,
