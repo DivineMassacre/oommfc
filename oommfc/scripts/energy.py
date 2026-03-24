@@ -994,7 +994,7 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
 
     # Write global variables (exclude common names)
     exclude = {'pi', 'e', 't', 'x', 'y', 'z', 'H_static_x', 'H_static_y', 'H_static_z',
-               'dt', 'stage_count', 'current_time', 'np', 'numpy', 'math'}
+               'dt', 'stage_count', 'current_time', 'np', 'numpy', 'math', 'mm'}
     global_var_list = []
     for name, value in sorted(global_vars.items()):
         if name not in exclude:
@@ -1444,28 +1444,29 @@ def _convert_expr_to_tcl(expr, params, args, local_vars=None, global_var_names=N
 
 def _convert_power_to_tcl(expr):
     """Convert a**b to pow(a,b) with improved support.
-    
+
     Supports:
     - Simple: x**2 → pow(x,2)
     - Numeric base: 2**10 → pow(2,10)
     - Float exponent: x**0.5 → pow(x,0.5)
     - Parenthesized: (x+y)**2 → pow((x+y),2)
+    - Nested parentheses: ((x-x0)**2) → pow((x-x0),2)
     - Numeric powers: 2**10 → 1024 (evaluated)
     - With spaces: x ** 2 → pow(x,2)
     - Scientific notation: (1e-12)**2 → pow(1e-12,2)
-    
+
     Parameters
     ----------
     expr : str
         Python expression with ** operator
-    
+
     Returns
     -------
     str
         Tcl expression with pow() function
     """
     import re
-    
+
     # Случай 0: (number)**(number) - вычисляется сразу
     # Важно: обрабатываем ДО других случаев со скобками
     def eval_power(match):
@@ -1478,48 +1479,75 @@ def _convert_power_to_tcl(expr):
             return f'{result:.15g}'
         except:
             return match.group(0)  # Оставляем как есть если не удалось
-    
+
     expr = re.sub(
         r'\((\d+\.?\d*[eE][+-]?\d+)\)\s*\*\*\s*(\d+\.?\d*)',
         eval_power,
         expr
     )
+
+    # 🔴 Случай 1: (expr)**(number) - скобки и число
+    # Используем балансировку скобок для поддержки вложенных скобок
+    def replace_paren_power_number(match):
+        full_match = match.group(0)
+        start = match.start()
+        
+        # Find the matching opening paren
+        paren_start = start
+        depth = 0
+        for i in range(start, len(full_match)):
+            if full_match[i] == '(':
+                if depth == 0:
+                    paren_start = i
+                depth += 1
+            elif full_match[i] == ')':
+                depth -= 1
+                if depth == 0:
+                    # Found matching close paren
+                    rest = full_match[i+1:]
+                    power_match = re.match(r'\s*\*\*\s*(\d+\.?\d*)', rest)
+                    if power_match:
+                        inner = full_match[paren_start:i+1]
+                        power = power_match.group(1)
+                        return f'pow({inner},{power})'
+                    break
+        return full_match
     
-    # Случай 1: (expr)**(number) - скобки и число (с пробелами)
+    # Match opening paren, then find balanced closing paren followed by **number
     expr = re.sub(
-        r'(\([^)]+\))\s*\*\*\s*(\d+\.?\d*)',
-        r'pow(\1,\2)',
+        r'\((?:[^()]*|\([^()]*\))*\)\s*\*\*\s*(\d+\.?\d*)',
+        lambda m: f'pow({m.group(0).split("**")[0].strip()},{m.group(1)})',
         expr
     )
-    
+
     # Случай 2: (expr)**(name) - скобки и переменная (с пробелами)
     expr = re.sub(
-        r'(\([^)]+\))\s*\*\*\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
-        r'pow(\1,\2)',
+        r'\((?:[^()]*|\([^()]*\))*\)\s*\*\*\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
+        lambda m: f'pow({m.group(0).split("**")[0].strip()},{m.group(1)})',
         expr
     )
-    
+
     # Случай 3: name**number - переменная и число (с пробелами)
     expr = re.sub(
         r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\*\*\s*(\d+\.?\d*)',
         r'pow(\1,\2)',
         expr
     )
-    
+
     # Случай 4: name**name - переменная и переменная (с пробелами)
     expr = re.sub(
         r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\*\*\s*([a-zA-Z_$][a-zA-Z0-9_$]*)',
         r'pow(\1,\2)',
         expr
     )
-    
+
     # Случай 5: number**number - вычисляется сразу (с пробелами)
     expr = re.sub(
         r'(\d+\.?\d*)\s*\*\*\s*(\d+\.?\d*)',
         eval_power,
         expr
     )
-    
+
     return expr
 
 
@@ -1595,6 +1623,12 @@ def _evaluate_numeric_constants(expr):
 
     # Save scientific notation numbers
     expr_protected = re.sub(scientific_pattern, save_scientific, expr)
+
+    # 🔴 Replace mm.consts.mu0 and mm.consts.gamma0 with numeric values
+    # mu0 = 1.2566370614359173e-06 (H/m or T·m/A)
+    # gamma0 = 2.211062618822956e5 (m/C·s)
+    expr_protected = expr_protected.replace('mm.consts.mu0', '1.2566370614359173e-06')
+    expr_protected = expr_protected.replace('mm.consts.gamma0', '2.211062618822956e5')
 
     # Try to evaluate simple numeric expressions
     # Pattern: sequence of numbers, operators, and math constants
