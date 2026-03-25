@@ -903,8 +903,25 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
         mif += "set H_static_z 0\n"
 
     # Time step and stage count
+    # For Oxs_StageZeeman to work correctly with Oxs_TimeDriver:
+    # - stage_count × dt must equal total simulation time (t)
+    # - Otherwise OOMMF will continue beyond stage_count stages
+    # Priority: 1) term._dt (explicit), 2) auto-calculate t/n, 3) default 1e-13
+    dt = getattr(term, '_dt', None)
+    
+    # Get t and n from driver kwargs for auto-calculation
+    t = kwargs.get('t', None)
+    n = kwargs.get('n', None)
+    
+    if dt is None and t is not None and n is not None:
+        # Auto-calculate dt from total time and number of steps
+        # This ensures: stage_count × dt = t (total simulation time)
+        dt = t / n  # e.g., 11e-9 / 2200 = 5e-12 (5 ps)
+    
+    if dt is None:
+        dt = 1e-13  # fallback default: 0.1 ps
+    
     # Priority: 1) term._stage_count, 2) kwargs['n'] from driver, 3) default 100
-    dt = getattr(term, '_dt', 1e-13)
     stage_count = getattr(term, '_stage_count', None)
 
     if stage_count is None:
