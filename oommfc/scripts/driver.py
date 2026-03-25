@@ -192,7 +192,7 @@ def driver_script(
         mif += "  mesh :mesh\n"
         mif += "  Ms :m0_norm\n"
         mif += "  m0 :m0\n"
-        mif += f"  stopping_time {t / n}\n"
+        mif += f"  stopping_time {t}\n"  # 🔴 FIX: stopping_time should be total time, not t/n
         mif += f"  stage_count {n}\n"
         for attr, value in driver:
             if attr != "evolver":
