@@ -1094,9 +1094,10 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
     mif += "}\n\n"
 
     # ========== Specify block ==========
+    # Note: Don't specify stage_count here - let Oxs_TimeDriver control it
+    # Oxs_StageZeeman will use the stage_count from Oxs_TimeDriver
     mif += "Specify Oxs_StageZeeman:zeeman [subst {\n"
     mif += f"  script FieldPerStage\n"
-    mif += f"  stage_count {stage_count}\n"
     mif += "}]\n\n"
 
     return mif
