@@ -874,7 +874,14 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
 
     Uses Oxs_StageZeeman + Oxs_ScriptVectorField approach:
     H(x,y,z,t) = H_static + Σᵢ [fᵢ(t) × maskᵢ(x,y,z)]
-    
+
+    .. note::
+
+        For correct time synchronization, this function automatically sets
+        ``stage_iteration_limit = 1`` in the driver kwargs. This ensures that
+        each stage corresponds to exactly one iteration, preventing time
+        desynchronization in Oxs_StageZeeman.
+
     Parameters
     ----------
     term : micromagneticmodel.Zeeman
@@ -883,11 +890,18 @@ def _spatiotemporal_zeeman_script(term, system, **kwargs):
         System object.
     **kwargs
         Additional keyword arguments from driver. Key argument:
-        
+
         - 'n' : int
             Number of stages from TimeDriver.drive(n=...).
             Used to set stage_count if term._stage_count is None.
+        - 'stage_iteration_limit' : int, optional
+            Automatically set to 1 for spatiotemporal Zeeman to ensure
+            correct synchronization between stages and iterations.
     """
+    # CRITICAL: Set stage_iteration_limit = 1 for spatiotemporal Zeeman
+    # This ensures 1 iteration = 1 stage, preventing time desynchronization
+    kwargs['stage_iteration_limit'] = 1
+    
     mif = "# ========== Zeeman: Spatiotemporal field ==========\n"
 
     # Static field

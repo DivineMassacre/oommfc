@@ -6,7 +6,23 @@ class TimeDriver(Driver):
 
     Only attributes in ``_allowed_attributes`` can be defined. For details on
     possible values for individual attributes and their default values, please
-    refer to ``Oxs_TimeDriver`` documentation (https://math.nist.gov/oommf/).
+    refer to ``Oxs_TimeDriver`` documentation
+    (https://math.nist.gov/oommf/doc/userguide21a0/userguidexml/sec_oxsDrivers.html).
+
+    Attributes
+    ----------
+    stage_iteration_limit : int, optional
+        Maximum number of iterations allowed per stage. If this limit
+        is reached, the stage is considered done, even if other stopping
+        criteria are not met.
+
+        .. note::
+
+            For spatiotemporal Zeeman simulations, this parameter is
+            automatically set to 1 to ensure correct synchronization
+            between stages and iterations. Without this setting, the
+            simulation may produce incorrect results due to time
+            desynchronization in Oxs_StageZeeman.
 
     Examples
     --------
@@ -32,6 +48,21 @@ class TimeDriver(Driver):
     >>> td = oc.TimeDriver()
     >>> td._allowed_attributes
     [...]
+
+    4. Spatiotemporal Zeeman (automatically sets stage_iteration_limit=1):
+
+    >>> import oommfc as oc
+    ...
+    >>> driver = oc.TimeDriver()
+    >>> # driver.drive(system, t=1e-9, n=200)  # stage_iteration_limit=1 set automatically
+
+    5. Explicit stage_iteration_limit:
+
+    >>> import oommfc as oc
+    ...
+    >>> driver = oc.TimeDriver()
+    >>> driver.stage_iteration_limit = 1  # 1 iteration per stage
+    >>> # driver.drive(system, t=1e-9, n=200)
 
     """
 

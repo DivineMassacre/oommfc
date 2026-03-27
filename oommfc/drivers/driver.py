@@ -177,6 +177,26 @@ class Driver(mm.ExternalDriver):
             :py:func:`~oommfc.compute`
 
         """
+        # CRITICAL: Check for spatiotemporal Zeeman and ensure stage_iteration_limit=1
+        # This is required for correct time synchronization in Oxs_StageZeeman
+        has_spatiotemporal = any(
+            getattr(term, 'has_time_terms', False) 
+            for term in system.energy
+        )
+        
+        if has_spatiotemporal:
+            if not hasattr(self, 'stage_iteration_limit'):
+                import warnings
+                warnings.warn(
+                    "Spatiotemporal Zeeman requires stage_iteration_limit=1 "
+                    "for correct time synchronization between stages and iterations. "
+                    "Setting automatically. To disable this warning, explicitly set "
+                    "driver.stage_iteration_limit = 1.",
+                    UserWarning,
+                    stacklevel=2
+                )
+                self.stage_iteration_limit = 1
+        
         # compute tlist for time-dependent field/current
         for term in system.energy:
             if hasattr(term, "func") and callable(term.func):
